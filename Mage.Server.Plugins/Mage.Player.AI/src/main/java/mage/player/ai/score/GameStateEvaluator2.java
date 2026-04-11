@@ -167,6 +167,14 @@ public final class GameStateEvaluator2 {
             score += 200;
         }
 
+        // SPRINT 8: low life = lower attack priority (avoid bullying the weakest player).
+        // In Commander, players generally don't pile on the near-dead unless it's lethal.
+        // The alpha strike path in declareAttackers() already overrides this with +1_000_000
+        // when the kill is actually available, so this only affects non-lethal attacks.
+        if (target.getLife() <= 10) {
+            score -= 400;
+        }
+
         return score;
     }
 

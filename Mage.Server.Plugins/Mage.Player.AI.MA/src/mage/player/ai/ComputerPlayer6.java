@@ -1137,6 +1137,22 @@ public class ComputerPlayer6 extends ComputerPlayer {
                         safeToAttack = false;
                     }
 
+                    // SPRINT 7: pointless attack check — attacker is safe but the attack has no
+                    // offensive value: no blocker can be killed and no damage gets through.
+                    // Exception: trample (excess damage passes), lifelink (life gain has value).
+                    if (safeToAttack && !possibleBlockers.isEmpty()) {
+                        boolean hasTrample = attacker.getAbilities().containsKey(TrampleAbility.getInstance().getId());
+                        boolean hasLifelink = attacker.getAbilities().containsKey(LifelinkAbility.getInstance().getId());
+                        if (!hasTrample && !hasLifelink) {
+                            // check if attacker can kill at least one possible blocker
+                            boolean canKillAnyBlocker = possibleBlockers.stream().anyMatch(b ->
+                                    b.getToughness().getValue() <= attacker.getPower().getValue());
+                            if (!canKillAnyBlocker) {
+                                safeToAttack = false; // safe but useless — keep as blocker instead
+                            }
+                        }
+                    }
+
                     // add attacker to the next list of all attackers that can safely attack
                     if (safeToAttack) {
                         attackersToCheck.add(attacker);
