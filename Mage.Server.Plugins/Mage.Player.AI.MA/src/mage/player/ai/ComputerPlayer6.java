@@ -1046,8 +1046,30 @@ public class ComputerPlayer6 extends ComputerPlayer {
 
             // TODO: add game simulations here to find best attackers/blockers combination
 
+            // SPRINT 2: sort opponents by threat score so we attack the biggest threat first
+            List<UUID> sortedOpponents = new ArrayList<>(game.getOpponents(playerId, true));
+            sortedOpponents.sort((a, b) -> {
+                int threatA = GameStateEvaluator2.evaluatePlayerThreat(a, game);
+                int threatB = GameStateEvaluator2.evaluatePlayerThreat(b, game);
+                return Integer.compare(threatB, threatA); // descending: highest threat first
+            });
+
+            // SPRINT 3: check if we are under significant threat from any opponent.
+            // If so, we will reserve our best blocker and not commit it to attack.
+            int maxOpponentThreat = 0;
+            for (UUID opponentId : sortedOpponents) {
+                int t = GameStateEvaluator2.evaluatePlayerThreat(opponentId, game);
+                if (t > maxOpponentThreat) {
+                    maxOpponentThreat = t;
+                }
+            }
+            // Threshold: roughly equivalent to an opponent having a decent board
+            // (e.g. a 3/3 + 2/2 = ~1600 perm score x3 = ~4800; we use 3000 as trigger)
+            final int DEFENDER_THRESHOLD = 3000;
+            final boolean underThreat = maxOpponentThreat > DEFENDER_THRESHOLD;
+
             // find safe attackers (can't be killed by blockers)
-            for (UUID defenderId : game.getOpponents(playerId, true)) {
+            for (UUID defenderId : sortedOpponents) {
                 Player defender = game.getPlayer(defenderId);
                 if (!defender.isInGame()) {
                     continue;
@@ -1118,6 +1140,23 @@ public class ComputerPlayer6 extends ComputerPlayer {
                     // add attacker to the next list of all attackers that can safely attack
                     if (safeToAttack) {
                         attackersToCheck.add(attacker);
+                    }
+                }
+
+                // SPRINT 3: if under threat and we have more than one safe attacker,
+                // hold back the creature with the highest combined P/T as a blocker.
+                if (underThreat && attackersToCheck.size() > 1) {
+                    Permanent bestDefender = null;
+                    int bestDefenderValue = -1;
+                    for (Permanent candidate : attackersToCheck) {
+                        int value = candidate.getPower().getValue() + candidate.getToughness().getValue();
+                        if (value > bestDefenderValue) {
+                            bestDefenderValue = value;
+                            bestDefender = candidate;
+                        }
+                    }
+                    if (bestDefender != null) {
+                        attackersToCheck.remove(bestDefender);
                     }
                 }
 

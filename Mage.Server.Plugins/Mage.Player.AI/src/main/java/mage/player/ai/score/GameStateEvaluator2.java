@@ -125,6 +125,39 @@ public final class GameStateEvaluator2 {
                 opponentLifeScore, opponentHandScore, opponentPermanentsScore);
     }
 
+    /**
+     * Evaluates how threatening a player is in a multiplayer game (Commander).
+     * Higher score = bigger threat = priority attack/removal target.
+     *
+     * Factors:
+     * - Board presence (permanents score x3) — most important signal
+     * - Cards in hand x50 — hidden potential
+     * - Life >= 30 bonus — player hasn't been focused yet
+     */
+    public static int evaluatePlayerThreat(UUID targetPlayerId, Game game) {
+        Player target = game.getPlayer(targetPlayerId);
+        if (target == null || !target.isInGame()) {
+            return 0;
+        }
+
+        int score = 0;
+
+        // Board presence is the strongest threat signal
+        for (Permanent perm : game.getBattlefield().getAllActivePermanents(targetPlayerId)) {
+            score += evaluatePermanent(perm, game, false) * 3;
+        }
+
+        // Cards in hand = hidden potential
+        score += target.getHand().size() * 50;
+
+        // High life means the player hasn't been targeted yet — still dangerous
+        if (target.getLife() >= 30) {
+            score += 200;
+        }
+
+        return score;
+    }
+
     public static int evaluatePermanent(Permanent permanent, Game game, boolean useCombatPermanentScore) {
         // prevent AI from attaching bad auras to its own permanents ex: Brainwash and Demonic Torment (no immediate penalty on the battlefield)
         int value = 0;
