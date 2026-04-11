@@ -87,6 +87,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
         optimizers.add(new EquipOptimizer());
         optimizers.add(new DiscardCardOptimizer());
         optimizers.add(new OutcomeOptimizer());
+        optimizers.add(new BoardwipeOptimizer()); // SPRINT 5b: don't wipe when winning
     }
 
     public ComputerPlayer6(String name, RangeOfInfluence range, int skill) {
