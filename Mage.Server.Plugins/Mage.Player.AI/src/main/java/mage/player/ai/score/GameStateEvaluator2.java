@@ -8,7 +8,9 @@ import org.apache.log4j.Logger;
 import java.util.UUID;
 import mage.abilities.Ability;
 import mage.abilities.effects.Effect;
+import mage.abilities.mana.ActivatedManaAbilityImpl;
 import mage.constants.Outcome;
+import mage.constants.Zone;
 
 /**
  * @author nantuko
@@ -143,9 +145,19 @@ public final class GameStateEvaluator2 {
         int score = 0;
 
         // Board presence is the strongest threat signal
+        int rampCount = 0;
         for (Permanent perm : game.getBattlefield().getAllActivePermanents(targetPlayerId)) {
             score += evaluatePermanent(perm, game, false) * 3;
+            // Count mana sources: lands, mana rocks, mana dorks, treasures, etc.
+            if (!perm.getAbilities().getAvailableActivatedManaAbilities(Zone.BATTLEFIELD, targetPlayerId, game).isEmpty()) {
+                rampCount++;
+            }
         }
+
+        // Ramp: each mana source beyond the baseline (4) adds threat.
+        // A player with 8 mana sources is significantly more dangerous than one with 4.
+        int extraRamp = Math.max(0, rampCount - 4);
+        score += extraRamp * 120;
 
         // Cards in hand = hidden potential
         score += target.getHand().size() * 50;
