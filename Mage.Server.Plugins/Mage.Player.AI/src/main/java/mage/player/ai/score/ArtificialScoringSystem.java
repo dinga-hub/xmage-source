@@ -75,7 +75,13 @@ public final class ArtificialScoringSystem {
             for (Ability ability : permanent.getAbilities(game)) {
                 abilityScore += MagicAbility.getAbilityScore(ability);
             }
-            score += power * 300 + getPositive(toughness) * 200 + abilityScore * (getPositive(power) + 1) / 2;
+            // SPRINT 6: split ability score into two components so utility creatures
+            // (hatebears, stax pieces, combo enablers) are not undervalued due to low P/T.
+            // - combatAbilityScore: scales with power (relevant for evasion, deathtouch, etc. in combat)
+            // - baseAbilityScore:   30% of abilityScore always counted, regardless of P/T
+            int combatAbilityScore = abilityScore * (getPositive(power) + 1) / 2;
+            int baseAbilityScore = abilityScore * 3 / 10;
+            score += power * 300 + getPositive(toughness) * 200 + combatAbilityScore + baseAbilityScore;
             int enchantments = 0;
             int equipments = 0;
             for (UUID uuid : permanent.getAttachments()) {
