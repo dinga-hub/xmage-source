@@ -159,8 +159,25 @@ public class ComputerPlayer extends PlayerImpl {
             return false;
         }
 
+        // SPRINT 4: for destructive outcomes, skip targets below the minimum removal threshold
+        // when targeting is optional (minTargets == 0) to avoid wasting removal on weak permanents.
+        boolean isDestructiveOutcome = (outcome == Outcome.DestroyPermanent
+                || outcome == Outcome.Exile
+                || outcome == Outcome.Detriment);
+        boolean targetingIsOptional = target.getMinNumberOfTargets() == 0;
+
         // good targets -- choose as much as possible
         for (MageItem item : possibleTargetsSelector.getGoodTargets()) {
+            // SPRINT 4: skip weak opponent permanents for removal when targeting is optional
+            if (isDestructiveOutcome && targetingIsOptional && item instanceof mage.game.permanent.Permanent) {
+                mage.game.permanent.Permanent perm = (mage.game.permanent.Permanent) item;
+                if (!perm.getControllerId().equals(getId())) {
+                    int rawScore = mage.player.ai.score.GameStateEvaluator2.evaluatePermanent(perm, game, false);
+                    if (rawScore < PossibleTargetsComparator.MIN_REMOVAL_TARGET_SCORE) {
+                        continue; // skip — not worth using removal here
+                    }
+                }
+            }
             target.add(item.getId(), game);
             if (target.isChoiceCompleted(abilityControllerId, source, game, fromCards)) {
                 return true;

@@ -34,10 +34,29 @@ public class PossibleTargetsComparator {
         this.playableItems = this.game.getPlayer(this.abilityControllerId).getPlayableObjects(this.game, Zone.ALL);
     }
 
+    // SPRINT 4: minimum raw permanent score to be considered a worthwhile removal target.
+    // A 2/2 vanilla scores ~1300; threshold of 800 means a 1/1 vanilla is skipped if
+    // a better target exists, but the bot won't refuse to target when forced.
+    public static final int MIN_REMOVAL_TARGET_SCORE = 800;
+
+    // SPRINT 4: normalizer for threat-weighted scores.
+    // threatScore/THREAT_NORMALIZER gives a multiplier added to the base permanent score.
+    // At 5000 threat (decent board), a permanent scores 2x. At 10000 (dominant player), 3x.
+    private static final int THREAT_NORMALIZER = 5000;
+
     private int getScoreFromBattlefield(MageItem item) {
         if (item instanceof Permanent) {
-            // use battlefield score instead simple life
-            return GameStateEvaluator2.evaluatePermanent((Permanent) item, game, false);
+            Permanent perm = (Permanent) item;
+            int permScore = GameStateEvaluator2.evaluatePermanent(perm, game, false);
+            // SPRINT 4: weight opponent permanents by how threatening their controller is.
+            // A 3/3 controlled by the dominant player is more removal-worthy than a 3/3
+            // controlled by a player who is already behind.
+            if (!perm.getControllerId().equals(abilityControllerId)) {
+                int threatScore = GameStateEvaluator2.evaluatePlayerThreat(perm.getControllerId(), game);
+                int threatBonus = permScore * threatScore / THREAT_NORMALIZER;
+                return permScore + threatBonus;
+            }
+            return permScore;
         } else {
             return getScoreFromLife(item);
         }
