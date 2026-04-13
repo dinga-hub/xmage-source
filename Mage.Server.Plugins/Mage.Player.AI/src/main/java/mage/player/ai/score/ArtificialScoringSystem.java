@@ -75,10 +75,12 @@ public final class ArtificialScoringSystem {
             for (Ability ability : permanent.getAbilities(game)) {
                 abilityScore += MagicAbility.getAbilityScore(ability);
             }
-            // SPRINT 6: split ability score into two components so utility creatures
-            // (hatebears, stax pieces, combo enablers) are not undervalued due to low P/T.
-            // - combatAbilityScore: scales with power (relevant for evasion, deathtouch, etc. in combat)
-            // - baseAbilityScore:   30% of abilityScore always counted, regardless of P/T
+            // Split ability score into two components to correctly value utility creatures
+            // (hatebears, stax pieces, combo enablers with low P/T).
+            // Original formula: abilityScore * (power+1)/2 — abilities scaled entirely with power,
+            // making a 0/1 with Indestructible + tap ability score nearly zero for its abilities.
+            // Fix: 70% of ability value scales with power (combat-relevant keywords), 30% is a flat
+            // base that applies regardless of P/T (static effects, activated abilities, etc.).
             int combatAbilityScore = abilityScore * (getPositive(power) + 1) / 2;
             int baseAbilityScore = abilityScore * 3 / 10;
             score += power * 300 + getPositive(toughness) * 200 + combatAbilityScore + baseAbilityScore;

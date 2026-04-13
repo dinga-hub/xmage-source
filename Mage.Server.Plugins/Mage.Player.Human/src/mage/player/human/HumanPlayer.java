@@ -7,8 +7,15 @@ import mage.abilities.costs.common.SacrificeSourceCost;
 import mage.abilities.costs.common.TapSourceCost;
 import mage.abilities.costs.mana.ManaCost;
 import mage.abilities.costs.mana.ManaCostsImpl;
+import mage.abilities.effects.Effect;
 import mage.abilities.effects.Effects;
 import mage.abilities.effects.RequirementEffect;
+import mage.abilities.effects.common.DestroyAllEffect;
+import mage.abilities.effects.common.DamageAllEffect;
+import mage.abilities.effects.common.ExileAllEffect;
+import mage.abilities.effects.common.ReturnToHandFromBattlefieldAllEffect;
+import mage.abilities.effects.common.SacrificeAllEffect;
+import mage.abilities.effects.common.continuous.BoostAllEffect;
 import mage.abilities.hint.HintUtils;
 import mage.abilities.mana.ActivatedManaAbilityImpl;
 import mage.abilities.mana.ManaAbility;
@@ -32,6 +39,7 @@ import mage.game.events.DeclareAttackerEvent;
 import mage.game.match.Match;
 import mage.game.permanent.Permanent;
 import mage.game.stack.Spell;
+import mage.game.stack.StackObject;
 import mage.game.tournament.Tournament;
 import mage.players.Player;
 import mage.players.PlayerImpl;
@@ -1191,6 +1199,46 @@ public class HumanPlayer extends PlayerImpl {
                     boolean canStopOnAny = possibleBlockersCount != 0 && getControllingPlayersUserData(game).getUserSkipPrioritySteps().isStopOnDeclareBlockersWithAnyPermanents();
                     boolean canStopOnZero = possibleBlockersCount == 0 && getControllingPlayersUserData(game).getUserSkipPrioritySteps().isStopOnDeclareBlockersWithZeroPermanents();
                     quickStop = canStopOnAny || canStopOnZero;
+                }
+
+                // Smart Skip: stop if an opponent's spell/ability on the stack targets our permanents
+                // or has a mass-removal effect (boardwipe). Only active while F9 (passedAllTurns) is on.
+                if (!quickStop && passedAllTurns && !game.getStack().isEmpty()) {
+                    for (StackObject stackObject : game.getStack()) {
+                        if (playerId.equals(stackObject.getControllerId())) {
+                            continue; // ignore own spells
+                        }
+                        Ability ability = stackObject.getStackAbility();
+                        if (ability == null) {
+                            continue;
+                        }
+                        // Check targeted removal: any target points to a permanent we control
+                        for (Target target : ability.getTargets()) {
+                            for (UUID targetId : target.getTargets()) {
+                                Permanent permanent = game.getPermanent(targetId);
+                                if (permanent != null && playerId.equals(permanent.getControllerId())) {
+                                    quickStop = true;
+                                    break;
+                                }
+                            }
+                            if (quickStop) break;
+                        }
+                        // Check boardwipe: mass-removal effects (false positives are acceptable)
+                        if (!quickStop) {
+                            for (Effect effect : ability.getEffects()) {
+                                if (effect instanceof DestroyAllEffect
+                                        || effect instanceof DamageAllEffect
+                                        || effect instanceof ExileAllEffect
+                                        || effect instanceof SacrificeAllEffect
+                                        || effect instanceof ReturnToHandFromBattlefieldAllEffect
+                                        || effect instanceof BoostAllEffect) {
+                                    quickStop = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (quickStop) break;
+                    }
                 }
             }
 

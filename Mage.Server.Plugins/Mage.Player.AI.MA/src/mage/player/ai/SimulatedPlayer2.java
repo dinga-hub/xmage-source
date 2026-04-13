@@ -140,7 +140,11 @@ public final class SimulatedPlayer2 extends ComputerPlayer {
             if (variableManaCost != null) {
                 int xInstancesCount = variableManaCost.getXInstancesCount();
 
-                for (int mana = variableManaCost.getMinX(); mana <= numAvailable; mana++) {
+                // Start X at 1 minimum. X=0 is almost always a wasted action (Fireball deals 0,
+                // Mirror Entity sets all creatures to 0/0, etc.). Cards that legitimately require
+                // X=0 can set minX=0 explicitly and will still generate that option.
+                int startX = Math.max(1, variableManaCost.getMinX());
+                for (int mana = startX; mana <= numAvailable; mana++) {
                     if (mana % xInstancesCount == 0) { // use only values dependant from multiplier
                         // find possible X value to pay
                         int xAnnounceValue = mana / xInstancesCount;

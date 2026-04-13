@@ -26,6 +26,11 @@ public final class GameStateEvaluator2 {
 
     public static final int HAND_CARD_SCORE = 5;
 
+    // Each mana floating in the pool = opportunity to cast an instant, counter a spell,
+    // or use a combat trick. Scoring it positively deters wasting mana on trivial effects.
+    // Value: spending {1}{B} (2 mana) on a useless ability must provide >200 score to justify it.
+    private static final int FLOATING_MANA_VALUE = 100;
+
     public static PlayerEvaluateScore evaluate(UUID playerId, Game game) {
         return evaluate(playerId, game, true);
     }
@@ -114,9 +119,19 @@ public final class GameStateEvaluator2 {
         int playerHandScore = player.getHand().size() * HAND_CARD_SCORE;
         int opponentHandScore = opponent.getHand().size() * HAND_CARD_SCORE;
 
+        // Score floating mana as a resource. Mana represents flexibility — it can be used for
+        // a removal spell, counterspell, or combat trick on a future priority window. By giving
+        // unspent mana a positive score, the bot pays an opportunity cost when it spends mana
+        // on a low-value activation (e.g. Regenerate with no attack coming, minor pump, trivial
+        // buff) vs. simply passing and keeping mana open.
+        // Calibration: each mana = 100 pts, so a 2-mana activation must provide >200 score to
+        // justify being cast over passing.
+        int playerManaScore = player.getManaPool().getMana().count() * FLOATING_MANA_VALUE;
+
         int score = (playerLifeScore - opponentLifeScore)
                 + (playerPermanentsScore - opponentPermanentsScore)
-                + (playerHandScore - opponentHandScore);
+                + (playerHandScore - opponentHandScore)
+                + playerManaScore; // opportunity cost: preserve mana > waste it on trivial effects
         logger.debug(score
                 + " total Score (life:" + (playerLifeScore - opponentLifeScore)
                 + " permanents:" + (playerPermanentsScore - opponentPermanentsScore)
@@ -162,17 +177,21 @@ public final class GameStateEvaluator2 {
         // Cards in hand = hidden potential
         score += target.getHand().size() * 50;
 
-        // High life means the player hasn't been targeted yet — still dangerous
-        if (target.getLife() >= 30) {
-            score += 200;
+        // Commander starts at 40 life. High life means the player hasn't been targeted yet — still dangerous.
+        // 35+ = pristine (threat bonus); 15 or less = under pressure; 8 or less = almost dead (deprioritize).
+        if (target.getLife() >= 35) {
+            score += 150;
         }
 
-        // SPRINT 8: low life = lower attack priority (avoid bullying the weakest player).
-        // In Commander, players generally don't pile on the near-dead unless it's lethal.
-        // The alpha strike path in declareAttackers() already overrides this with +1_000_000
-        // when the kill is actually available, so this only affects non-lethal attacks.
-        if (target.getLife() <= 10) {
-            score -= 400;
+        // Low life = lower threat priority. In Commander, players typically don't pile on a
+        // near-dead opponent unless the kill is available — it wastes resources and draws attention.
+        // The lethal-kill override (+1,000,000) in declareAttackers() still fires when death is
+        // actually reachable, so this penalty only affects non-lethal attacks on weakened players.
+        if (target.getLife() <= 15) {
+            score -= 200;
+        }
+        if (target.getLife() <= 8) {
+            score -= 400; // cumulative: -600 total when nearly dead
         }
 
         return score;

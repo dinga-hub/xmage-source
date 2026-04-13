@@ -87,7 +87,8 @@ public class ComputerPlayer6 extends ComputerPlayer {
         optimizers.add(new EquipOptimizer());
         optimizers.add(new DiscardCardOptimizer());
         optimizers.add(new OutcomeOptimizer());
-        optimizers.add(new BoardwipeOptimizer()); // SPRINT 5b: don't wipe when winning
+        optimizers.add(new BoardwipeOptimizer());     // multiplayer: suppress boardwipes when bot has board advantage
+        optimizers.add(new InstantTimingOptimizer()); // multiplayer: hold instants for opponent turns; no tap-cost waste before combat
     }
 
     public ComputerPlayer6(String name, RangeOfInfluence range, int skill) {
@@ -964,6 +965,55 @@ public class ComputerPlayer6 extends ComputerPlayer {
                     }
                 }
             }
+
+            // Chump block (Sprint 10a): blockWithGoodTrade2 only assigns "good trades", so it may leave
+            // lethal attackers unblocked. If total unblocked power >= our life, sacrifice the least
+            // valuable available blockers starting from the most dangerous attacker to survive the turn.
+            {
+                Set<UUID> coveredAttackerIds = new HashSet<>();
+                Set<UUID> usedBlockerIds = new HashSet<>();
+                for (Map.Entry<Permanent, List<Permanent>> entry : combatInfo.getCombat().entrySet()) {
+                    if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                        coveredAttackerIds.add(entry.getKey().getId());
+                        entry.getValue().forEach(b -> usedBlockerIds.add(b.getId()));
+                    }
+                }
+
+                int unblockedDamage = 0;
+                List<Permanent> unblockedAttackers = new ArrayList<>();
+                for (Permanent atk : attackers) {
+                    if (!coveredAttackerIds.contains(atk.getId())) {
+                        unblockedDamage += atk.getPower().getValue();
+                        unblockedAttackers.add(atk);
+                    }
+                }
+
+                if (unblockedDamage >= player.getLife() && player.getLife() > 0) {
+                    // Sort biggest threats first; sacrifice smallest-value blockers first
+                    unblockedAttackers.sort((a, b) -> Integer.compare(b.getPower().getValue(), a.getPower().getValue()));
+                    List<Permanent> chumpCandidates = possibleBlockers.stream()
+                            .filter(b -> !usedBlockerIds.contains(b.getId()))
+                            .sorted(Comparator.comparingInt(b -> b.getPower().getValue() + b.getToughness().getValue()))
+                            .collect(Collectors.toList());
+
+                    int idx = 0;
+                    for (Permanent attacker : unblockedAttackers) {
+                        if (unblockedDamage < player.getLife()) {
+                            break;
+                        }
+                        if (idx >= chumpCandidates.size()) {
+                            break;
+                        }
+                        Permanent chump = chumpCandidates.get(idx++);
+                        if (chump.canBlock(attacker.getId(), game)) {
+                            player.declareBlocker(player.getId(), chump.getId(), attacker.getId(), game);
+                            unblockedDamage -= attacker.getPower().getValue();
+                            blocked = true;
+                        }
+                    }
+                }
+            }
+
             if (blocked) {
                 game.getPlayers().resetPassed();
             }
@@ -1047,7 +1097,8 @@ public class ComputerPlayer6 extends ComputerPlayer {
 
             // TODO: add game simulations here to find best attackers/blockers combination
 
-            // SPRINT 2: sort opponents by threat score so we attack the biggest threat first
+            // Multiplayer improvement: sort opponents by threat score (board + ramp + hand + life)
+            // so we prioritize attacking the most dangerous player rather than the first in iteration order.
             List<UUID> sortedOpponents = new ArrayList<>(game.getOpponents(playerId, true));
             sortedOpponents.sort((a, b) -> {
                 int threatA = GameStateEvaluator2.evaluatePlayerThreat(a, game);
@@ -1055,8 +1106,9 @@ public class ComputerPlayer6 extends ComputerPlayer {
                 return Integer.compare(threatB, threatA); // descending: highest threat first
             });
 
-            // SPRINT 3: check if we are under significant threat from any opponent.
-            // If so, we will reserve our best blocker and not commit it to attack.
+            // Multiplayer improvement: if any opponent has a significant board presence, reserve
+            // our best creature as a blocker rather than committing everything to offense.
+            // This prevents over-attacking into a strong opponent and leaving ourselves exposed.
             int maxOpponentThreat = 0;
             for (UUID opponentId : sortedOpponents) {
                 int t = GameStateEvaluator2.evaluatePlayerThreat(opponentId, game);
@@ -1138,9 +1190,10 @@ public class ComputerPlayer6 extends ComputerPlayer {
                         safeToAttack = false;
                     }
 
-                    // SPRINT 7: pointless attack check — attacker is safe but the attack has no
-                    // offensive value: no blocker can be killed and no damage gets through.
-                    // Exception: trample (excess damage passes), lifelink (life gain has value).
+                    // Skip attacks with no offensive value: attacker survives but can't kill any blocker
+                    // and can't deal direct damage (all attackers will be blocked). Tapping a creature
+                    // for zero result is a wasted action.
+                    // Exception: trample (excess damage passes through), lifelink (life gain has value).
                     if (safeToAttack && !possibleBlockers.isEmpty()) {
                         boolean hasTrample = attacker.getAbilities().containsKey(TrampleAbility.getInstance().getId());
                         boolean hasLifelink = attacker.getAbilities().containsKey(LifelinkAbility.getInstance().getId());
@@ -1154,14 +1207,78 @@ public class ComputerPlayer6 extends ComputerPlayer {
                         }
                     }
 
+                    // Multi-block trade check: even if no single blocker kills the attacker, two or
+                    // more blockers acting together might. If the combined power of the optimal blocking
+                    // set reaches the attacker's toughness, compare scores: attacker score vs. the score
+                    // of blockers the attacker can kill in return. Suppress the attack if the trade is
+                    // net-negative for us (attacker worth more than what it kills).
+                    // Exceptions: trample (excess damage is the goal), indestructible (won't die anyway),
+                    // deathtouch (kills each blocker with 1 damage, making multi-block irrelevant).
+                    if (safeToAttack && possibleBlockers.size() >= 2) {
+                        boolean hasTrample9 = attacker.getAbilities().containsKey(TrampleAbility.getInstance().getId());
+                        boolean hasIndestructible9 = attacker.getAbilities().containsKey(IndestructibleAbility.getInstance().getId());
+                        boolean hasDeathtouch9 = attacker.getAbilities().containsKey(DeathtouchAbility.getInstance().getId());
+                        if (!hasTrample9 && !hasIndestructible9 && !hasDeathtouch9) {
+                            int attackerToughness = attacker.getToughness().getValue();
+                            int attackerPow = attacker.getPower().getValue();
+                            // Sort by power desc — opponent picks strongest to kill attacker fastest
+                            List<Permanent> sortedBlk = possibleBlockers.stream()
+                                    .sorted((a, b) -> Integer.compare(b.getPower().getValue(), a.getPower().getValue()))
+                                    .collect(Collectors.toList());
+                            int cumulativePow = 0;
+                            int blockersNeeded = 0;
+                            for (Permanent blk : sortedBlk) {
+                                cumulativePow += blk.getPower().getValue();
+                                blockersNeeded++;
+                                if (cumulativePow >= attackerToughness) {
+                                    break;
+                                }
+                            }
+                            if (blockersNeeded >= 2 && cumulativePow >= attackerToughness) {
+                                // Attacker can die to multi-block. Is the value trade worth it?
+                                int attackerScore = GameStateEvaluator2.evaluatePermanent(attacker, game, false);
+                                // Count what the attacker kills: assign damage to weakest blockers first
+                                List<Permanent> blockingSet = sortedBlk.subList(0, blockersNeeded);
+                                List<Permanent> sortedByToughness = blockingSet.stream()
+                                        .sorted((a, b) -> Integer.compare(a.getToughness().getValue(), b.getToughness().getValue()))
+                                        .collect(Collectors.toList());
+                                int damageLeft = attackerPow;
+                                int killedScore = 0;
+                                for (Permanent blk : sortedByToughness) {
+                                    if (damageLeft >= blk.getToughness().getValue()) {
+                                        damageLeft -= blk.getToughness().getValue();
+                                        killedScore += GameStateEvaluator2.evaluatePermanent(blk, game, false);
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                if (attackerScore > killedScore) {
+                                    safeToAttack = false; // unfavorable trade against gang-block
+                                }
+                            }
+                        }
+                    }
+
+                    // Early game restraint (Sprint 12): in turns 1-4, tapping small ground creatures
+                    // for 1-2 chip damage is net-negative in Commander. Development and board presence
+                    // are more valuable than early aggression. Keep creatures with power < 3 back as
+                    // potential blockers/ramp unless they have evasion (flying = can attack safely).
+                    // Alpha-strike kill shots are already handled above and bypass this check.
+                    if (safeToAttack
+                            && game.getTurnNum() <= 4
+                            && attacker.getPower().getValue() < 3
+                            && !attacker.getAbilities().containsKey(FlyingAbility.getInstance().getId())) {
+                        safeToAttack = false;
+                    }
+
                     // add attacker to the next list of all attackers that can safely attack
                     if (safeToAttack) {
                         attackersToCheck.add(attacker);
                     }
                 }
 
-                // SPRINT 3: if under threat and we have more than one safe attacker,
-                // hold back the creature with the highest combined P/T as a blocker.
+                // Reserve best blocker: if we are under threat and have multiple safe attackers,
+                // keep the highest-value creature (by P/T sum) back to defend.
                 if (underThreat && attackersToCheck.size() > 1) {
                     Permanent bestDefender = null;
                     int bestDefenderValue = -1;
