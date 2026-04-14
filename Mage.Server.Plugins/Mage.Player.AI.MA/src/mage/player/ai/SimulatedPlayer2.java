@@ -124,6 +124,22 @@ public final class SimulatedPlayer2 extends ComputerPlayer {
     }
 
     @Override
+    public List<Ability> getPlayableOptions(Ability ability, Game game) {
+        List<Ability> options = super.getPlayableOptions(ability, game);
+        // Parent only calls addVariableXOptions when the ability has targets to choose.
+        // Targetless abilities with X costs (e.g. Mirror Entity {X}: becomes X/X) fall through
+        // with an empty list, causing the raw ability (X=0) to be used. Handle them here.
+        if (options.isEmpty()
+                && !ability.isModal()
+                && ability.getTargets().getNextUnchosen(game) == null
+                && ability.getCosts().getTargets().getNextUnchosen(game) == null
+                && !ability.getManaCosts().getVariableCosts().isEmpty()) {
+            addVariableXOptions(options, ability, 0, game);
+        }
+        return options;
+    }
+
+    @Override
     protected void addVariableXOptions(List<Ability> options, Ability ability, int targetNum, Game game) {
         // calculate the mana that can be used for the x part
         int numAvailable = getAvailableManaProducers(game).size() - ability.getManaCosts().manaValue();
@@ -166,6 +182,9 @@ public final class SimulatedPlayer2 extends ComputerPlayer {
                         // add the different possible target option for the specific X value
                         if (newAbility.getTargets().getNextUnchosen(game) != null) {
                             addTargetOptions(options, newAbility, targetNum, game);
+                        } else {
+                            // Targetless ability (e.g. Mirror Entity {X}: becomes X/X) — add directly
+                            options.add(newAbility);
                         }
                     }
 
