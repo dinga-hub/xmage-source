@@ -54,6 +54,9 @@ public class ComputerPlayer6 extends ComputerPlayer {
     private static final int MAX_SIMULATED_NODES_PER_CALC = 5000;
     private static final int MAX_SIMULATED_NODES_PER_ERROR = 5100; // TODO: debug only, set low value to find big calculations
 
+    // Sprint Debug: set to true to log AI decisions to the game log for tuning/validation
+    private static final boolean AI_DEBUG_LOG = false;
+
     // same params as Executors.newFixedThreadPool
     // no needs errors check in afterExecute here cause that pool used for FutureTask with result check already
     private static final ExecutorService threadPoolSimulations = new ThreadPoolExecutor(
@@ -929,6 +932,16 @@ public class ComputerPlayer6 extends ComputerPlayer {
         return true;
     }
 
+    /**
+     * Logs an AI decision to the game log when AI_DEBUG_LOG is enabled.
+     * Use this to validate and tune heuristic behaviour during local play.
+     */
+    private void aiLog(Game game, String msg) {
+        if (AI_DEBUG_LOG) {
+            game.fireStatusEvent("[AI:" + getName() + "] " + msg, false, false);
+        }
+    }
+
     private void declareBlockers(Game game, UUID activePlayerId) {
         game.fireEvent(new GameEvent(GameEvent.EventType.DECLARE_BLOCKERS_STEP_PRE, null, null, activePlayerId));
         if (!game.replaceEvent(GameEvent.getEvent(GameEvent.EventType.DECLARING_BLOCKERS, activePlayerId, activePlayerId))) {
@@ -954,31 +967,127 @@ public class ComputerPlayer6 extends ComputerPlayer {
             Player player = game.getPlayer(playerId);
 
             boolean blocked = false;
+
+            // Build shared tracking sets (used by all blocker logic below)
+            Set<UUID> coveredAttackerIds = new HashSet<>();
+            Set<UUID> usedBlockerIds = new HashSet<>();
+
+            // Assign good-trade blocks from CombatUtil
             for (Map.Entry<Permanent, List<Permanent>> entry : combatInfo.getCombat().entrySet()) {
                 UUID attackerId = entry.getKey().getId();
                 List<Permanent> blockers = entry.getValue();
-                if (blockers != null) {
+                if (blockers != null && !blockers.isEmpty()) {
+                    coveredAttackerIds.add(attackerId);
                     for (Permanent blocker : blockers) {
                         // TODO: buggy or miss on multi blocker requirements?!
                         player.declareBlocker(player.getId(), blocker.getId(), attackerId, game);
+                        usedBlockerIds.add(blocker.getId());
                         blocked = true;
                     }
                 }
             }
 
-            // Chump block (Sprint 10a): blockWithGoodTrade2 only assigns "good trades", so it may leave
-            // lethal attackers unblocked. If total unblocked power >= our life, sacrifice the least
-            // valuable available blockers starting from the most dangerous attacker to survive the turn.
+            // Sprint 13a — Deathtouch blocker priority: a single deathtouch blocker kills
+            // any attacker regardless of P/T. Assign the smallest available deathtouch
+            // blocker to the highest-value unblocked attacker when the trade is favourable.
             {
-                Set<UUID> coveredAttackerIds = new HashSet<>();
-                Set<UUID> usedBlockerIds = new HashSet<>();
-                for (Map.Entry<Permanent, List<Permanent>> entry : combatInfo.getCombat().entrySet()) {
-                    if (entry.getValue() != null && !entry.getValue().isEmpty()) {
-                        coveredAttackerIds.add(entry.getKey().getId());
-                        entry.getValue().forEach(b -> usedBlockerIds.add(b.getId()));
+                List<Permanent> unblockedSorted = attackers.stream()
+                        .filter(a -> !coveredAttackerIds.contains(a.getId()))
+                        .sorted((a, b) -> Integer.compare(
+                                GameStateEvaluator2.evaluatePermanent(b, game, false),
+                                GameStateEvaluator2.evaluatePermanent(a, game, false)))
+                        .collect(Collectors.toList());
+
+                for (Permanent atk : unblockedSorted) {
+                    int atkScore = GameStateEvaluator2.evaluatePermanent(atk, game, false);
+
+                    // Pick smallest (least valuable) available deathtouch blocker
+                    Optional<Permanent> dtOpt = possibleBlockers.stream()
+                            .filter(b -> !usedBlockerIds.contains(b.getId()))
+                            .filter(b -> b.canBlock(atk.getId(), game))
+                            .filter(b -> b.getAbilities().containsKey(DeathtouchAbility.getInstance().getId()))
+                            .min(Comparator.comparingInt(b ->
+                                    GameStateEvaluator2.evaluatePermanent(b, game, false)));
+
+                    if (dtOpt.isPresent()) {
+                        int dtScore = GameStateEvaluator2.evaluatePermanent(dtOpt.get(), game, false);
+                        if (atkScore > dtScore) {
+                            player.declareBlocker(player.getId(), dtOpt.get().getId(), atk.getId(), game);
+                            usedBlockerIds.add(dtOpt.get().getId());
+                            coveredAttackerIds.add(atk.getId());
+                            blocked = true;
+                            aiLog(game, "Deathtouch block: " + dtOpt.get().getName()
+                                    + " blocks " + atk.getName()
+                                    + " (dt=" + dtScore + " vs atk=" + atkScore + ")");
+                        }
                     }
                 }
+            }
 
+            // Sprint 13b — Multi-block with expendable creatures: if a high-value attacker is
+            // unblocked, gang up with 2+ cheap/expendable blockers to trade up in score.
+            // "Expendable" = score < attacker score × 0.40 (cheap creatures worth sacrificing).
+            // Skip indestructible attackers (can't be killed by damage).
+            {
+                final int HIGH_VALUE_ATK_THRESHOLD = 1200;
+
+                List<Permanent> highValueUnblocked = attackers.stream()
+                        .filter(a -> !coveredAttackerIds.contains(a.getId()))
+                        .filter(a -> GameStateEvaluator2.evaluatePermanent(a, game, false) >= HIGH_VALUE_ATK_THRESHOLD)
+                        .sorted((a, b) -> Integer.compare(
+                                GameStateEvaluator2.evaluatePermanent(b, game, false),
+                                GameStateEvaluator2.evaluatePermanent(a, game, false)))
+                        .collect(Collectors.toList());
+
+                for (Permanent atk : highValueUnblocked) {
+                    if (coveredAttackerIds.contains(atk.getId())) {
+                        continue;
+                    }
+                    // Can't kill indestructible with damage
+                    if (atk.getAbilities().containsKey(IndestructibleAbility.getInstance().getId())) {
+                        continue;
+                    }
+
+                    int atkScore = GameStateEvaluator2.evaluatePermanent(atk, game, false);
+                    final int expThreshold = (int) (atkScore * 0.40);
+
+                    // Gather expendable blockers sorted by power desc (use fewest blockers possible)
+                    List<Permanent> expendable = possibleBlockers.stream()
+                            .filter(b -> !usedBlockerIds.contains(b.getId()))
+                            .filter(b -> b.canBlock(atk.getId(), game))
+                            .filter(b -> GameStateEvaluator2.evaluatePermanent(b, game, false) < expThreshold)
+                            .sorted((a, b) -> Integer.compare(b.getPower().getValue(), a.getPower().getValue()))
+                            .collect(Collectors.toList());
+
+                    // Check if 2+ can gang-kill (combined power >= attacker toughness)
+                    int cumulativePow = 0;
+                    List<Permanent> gangSet = new ArrayList<>();
+                    for (Permanent blk : expendable) {
+                        cumulativePow += blk.getPower().getValue();
+                        gangSet.add(blk);
+                        if (cumulativePow >= atk.getToughness().getValue()) {
+                            break;
+                        }
+                    }
+
+                    if (gangSet.size() >= 2 && cumulativePow >= atk.getToughness().getValue()) {
+                        for (Permanent blk : gangSet) {
+                            player.declareBlocker(player.getId(), blk.getId(), atk.getId(), game);
+                            usedBlockerIds.add(blk.getId());
+                            blocked = true;
+                        }
+                        coveredAttackerIds.add(atk.getId());
+                        aiLog(game, "Gang-block: " + gangSet.size() + "x expendable on "
+                                + atk.getName() + " (atk=" + atkScore
+                                + ", threshold<" + expThreshold + ")");
+                    }
+                }
+            }
+
+            // Sprint 10a — Chump block (survival): blockWithGoodTrade2 only assigns "good trades",
+            // so lethal attackers may remain unblocked. If total unblocked power >= our life,
+            // sacrifice the least valuable available blockers to survive the turn.
+            {
                 int unblockedDamage = 0;
                 List<Permanent> unblockedAttackers = new ArrayList<>();
                 for (Permanent atk : attackers) {
@@ -1009,6 +1118,8 @@ public class ComputerPlayer6 extends ComputerPlayer {
                             player.declareBlocker(player.getId(), chump.getId(), attacker.getId(), game);
                             unblockedDamage -= attacker.getPower().getValue();
                             blocked = true;
+                            aiLog(game, "Chump block: " + chump.getName() + " → " + attacker.getName()
+                                    + " (remaining=" + unblockedDamage + ", life=" + player.getLife() + ")");
                         }
                     }
                 }
@@ -1099,23 +1210,25 @@ public class ComputerPlayer6 extends ComputerPlayer {
 
             // Multiplayer improvement: sort opponents by threat score (board + ramp + hand + life)
             // so we prioritize attacking the most dangerous player rather than the first in iteration order.
+            // Cache scores to avoid recomputing evaluatePlayerThreat (iterates all permanents) multiple times.
             List<UUID> sortedOpponents = new ArrayList<>(game.getOpponents(playerId, true));
-            sortedOpponents.sort((a, b) -> {
-                int threatA = GameStateEvaluator2.evaluatePlayerThreat(a, game);
-                int threatB = GameStateEvaluator2.evaluatePlayerThreat(b, game);
-                return Integer.compare(threatB, threatA); // descending: highest threat first
-            });
+            Map<UUID, Integer> threatCache = new java.util.HashMap<>();
+            for (UUID opId : sortedOpponents) {
+                threatCache.put(opId, GameStateEvaluator2.evaluatePlayerThreat(opId, game));
+            }
+            sortedOpponents.sort((a, b) -> Integer.compare(threatCache.get(b), threatCache.get(a)));
 
             // Multiplayer improvement: if any opponent has a significant board presence, reserve
             // our best creature as a blocker rather than committing everything to offense.
             // This prevents over-attacking into a strong opponent and leaving ourselves exposed.
             int maxOpponentThreat = 0;
             for (UUID opponentId : sortedOpponents) {
-                int t = GameStateEvaluator2.evaluatePlayerThreat(opponentId, game);
+                int t = threatCache.get(opponentId);
                 if (t > maxOpponentThreat) {
                     maxOpponentThreat = t;
                 }
             }
+
             // Threshold: roughly equivalent to an opponent having a decent board
             // (e.g. a 3/3 + 2/2 = ~1600 perm score x3 = ~4800; we use 3000 as trigger)
             final int DEFENDER_THRESHOLD = 3000;
@@ -1203,6 +1316,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                                     b.getToughness().getValue() <= attacker.getPower().getValue());
                             if (!canKillAnyBlocker) {
                                 safeToAttack = false; // safe but useless — keep as blocker instead
+                                aiLog(game, "Hold " + attacker.getName() + ": no offensive value (can't kill blockers, no trample/lifelink)");
                             }
                         }
                     }
@@ -1254,6 +1368,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                                 }
                                 if (attackerScore > killedScore) {
                                     safeToAttack = false; // unfavorable trade against gang-block
+                                    aiLog(game, "Hold " + attacker.getName() + ": gang-block unfavorable (atk=" + attackerScore + " kills=" + killedScore + ", " + blockersNeeded + " blockers)");
                                 }
                             }
                         }
@@ -1269,6 +1384,42 @@ public class ComputerPlayer6 extends ComputerPlayer {
                             && attacker.getPower().getValue() < 3
                             && !attacker.getAbilities().containsKey(FlyingAbility.getInstance().getId())) {
                         safeToAttack = false;
+                        aiLog(game, "Hold " + attacker.getName() + ": early game restraint (turn " + game.getTurnNum() + ", power=" + attacker.getPower().getValue() + ")");
+                    }
+
+                    // Sprint 15 — High-value piece protection: don't risk attacking with a
+                    // high-score piece when 2+ expendable opponent blockers can gang-kill it.
+                    // Complements Sprint 9 (which uses all blockers); this specifically protects
+                    // valuable pieces (commanders, bombs) from cheap sacrifice trades.
+                    // Exceptions: trample (damage leaks through), indestructible, deathtouch.
+                    if (safeToAttack) {
+                        int atkScore15 = GameStateEvaluator2.evaluatePermanent(attacker, game, false);
+                        final int HIGH_VALUE_THRESHOLD = 1200;
+                        if (atkScore15 >= HIGH_VALUE_THRESHOLD && possibleBlockers.size() >= 2) {
+                            boolean hasTrample15 = attacker.getAbilities().containsKey(TrampleAbility.getInstance().getId());
+                            boolean hasIndest15 = attacker.getAbilities().containsKey(IndestructibleAbility.getInstance().getId());
+                            boolean hasDT15 = attacker.getAbilities().containsKey(DeathtouchAbility.getInstance().getId());
+                            if (!hasTrample15 && !hasIndest15 && !hasDT15) {
+                                final int expThreshold15 = (int) (atkScore15 * 0.40);
+                                List<Permanent> expBlockers15 = possibleBlockers.stream()
+                                        .filter(b -> GameStateEvaluator2.evaluatePermanent(b, game, false) < expThreshold15)
+                                        .sorted((a, b) -> Integer.compare(b.getPower().getValue(), a.getPower().getValue()))
+                                        .collect(Collectors.toList());
+                                int cumPow15 = 0;
+                                int expCount15 = 0;
+                                for (Permanent blk : expBlockers15) {
+                                    cumPow15 += blk.getPower().getValue();
+                                    expCount15++;
+                                    if (cumPow15 >= attacker.getToughness().getValue()) {
+                                        break;
+                                    }
+                                }
+                                if (expCount15 >= 2 && cumPow15 >= attacker.getToughness().getValue()) {
+                                    safeToAttack = false;
+                                    aiLog(game, "Hold " + attacker.getName() + ": high-value protection (score=" + atkScore15 + ", " + expCount15 + "x expendable can kill)");
+                                }
+                            }
+                        }
                     }
 
                     // add attacker to the next list of all attackers that can safely attack
@@ -1291,6 +1442,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                     }
                     if (bestDefender != null) {
                         attackersToCheck.remove(bestDefender);
+                        aiLog(game, "Reserve blocker: " + bestDefender.getName() + " held back (maxThreat=" + maxOpponentThreat + ")");
                     }
                 }
 
