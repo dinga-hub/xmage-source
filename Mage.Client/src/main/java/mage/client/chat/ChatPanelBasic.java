@@ -215,6 +215,7 @@ public class ChatPanelBasic extends javax.swing.JPanel {
      * @param color       Preferred color. Not used.
      */
     public void receiveMessage(String username, String message, Date time, String turnInfo, MessageType messageType, MessageColor color) {
+        mage.client.game.DiceRollToast.showIfDiceRoll(message, this);
         StringBuilder text = new StringBuilder();
         if (time != null) {
             text.append(getColoredText(TIMESTAMP_COLOR, timeFormatter.format(time) + getTurnInfoPart(turnInfo) + ": "));

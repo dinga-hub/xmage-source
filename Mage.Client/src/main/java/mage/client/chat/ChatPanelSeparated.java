@@ -37,6 +37,7 @@ public class ChatPanelSeparated extends ChatPanelBasic {
      */
     @Override
     public void receiveMessage(String username, String message, Date time, String turnInfo, ChatMessage.MessageType messageType, ChatMessage.MessageColor color) {
+        mage.client.game.DiceRollToast.showIfDiceRoll(message, this);
         String userColor;
         String textColor;
         String userSeparator = " ";
