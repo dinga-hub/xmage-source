@@ -1223,7 +1223,9 @@ public class HumanPlayer extends PlayerImpl {
                             }
                             if (quickStop) break;
                         }
-                        // Check boardwipe: mass-removal effects (false positives are acceptable)
+                        // Check boardwipe: mass-removal effects (false positives are acceptable).
+                        // Two-pass: known Effect subclasses first, then staticText keywords for
+                        // custom OneShotEffect implementations like BloodMoney.
                         if (!quickStop) {
                             for (Effect effect : ability.getEffects()) {
                                 if (effect instanceof DestroyAllEffect
@@ -1234,6 +1236,19 @@ public class HumanPlayer extends PlayerImpl {
                                         || effect instanceof BoostAllEffect) {
                                     quickStop = true;
                                     break;
+                                }
+                                // Catch custom effects (e.g. BloodMoney) by scanning staticText
+                                String text = effect.getText(null);
+                                if (text != null) {
+                                    String lower = text.toLowerCase(java.util.Locale.ENGLISH);
+                                    if (lower.contains("destroy all")
+                                            || lower.contains("exile all")
+                                            || lower.contains("sacrifice all")
+                                            || lower.contains("damage to all")
+                                            || lower.contains("damage to each")) {
+                                        quickStop = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
