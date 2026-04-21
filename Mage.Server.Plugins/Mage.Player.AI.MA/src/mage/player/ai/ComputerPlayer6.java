@@ -1303,9 +1303,16 @@ public class ComputerPlayer6 extends ComputerPlayer {
                         safeToAttack = false;
                     }
 
-                    // Skip attacks with no offensive value: attacker survives but can't kill any blocker
-                    // and can't deal direct damage (all attackers will be blocked). Tapping a creature
-                    // for zero result is a wasted action.
+                    // ── Sprints 7, 9, 12, 15 ────────────────────────────────────────────────
+                    // These checks call evaluatePermanent() in nested loops and are too expensive
+                    // to run inside the minimax simulation (15 000 nodes × N attackers × M blockers).
+                    // During simulation the basic P/T check above is sufficient; full heuristics
+                    // only apply on the real board (isSimulation() == false).
+                    if (!game.isSimulation()) {
+
+                    // Sprint 7 — Skip attacks with no offensive value: attacker survives but can't
+                    // kill any blocker and can't deal direct damage. Tapping a creature for zero
+                    // result is a wasted action.
                     // Exception: trample (excess damage passes through), lifelink (life gain has value).
                     if (safeToAttack && !possibleBlockers.isEmpty()) {
                         boolean hasTrample = attacker.getAbilities().containsKey(TrampleAbility.getInstance().getId());
@@ -1321,13 +1328,12 @@ public class ComputerPlayer6 extends ComputerPlayer {
                         }
                     }
 
-                    // Multi-block trade check: even if no single blocker kills the attacker, two or
-                    // more blockers acting together might. If the combined power of the optimal blocking
-                    // set reaches the attacker's toughness, compare scores: attacker score vs. the score
-                    // of blockers the attacker can kill in return. Suppress the attack if the trade is
-                    // net-negative for us (attacker worth more than what it kills).
-                    // Exceptions: trample (excess damage is the goal), indestructible (won't die anyway),
-                    // deathtouch (kills each blocker with 1 damage, making multi-block irrelevant).
+                    // Sprint 9 — Multi-block trade check: even if no single blocker kills the attacker,
+                    // two or more blockers acting together might. If the combined power of the optimal
+                    // blocking set reaches the attacker's toughness, compare scores: attacker score vs.
+                    // the score of blockers the attacker can kill in return. Suppress the attack if the
+                    // trade is net-negative for us (attacker worth more than what it kills).
+                    // Exceptions: trample, indestructible, deathtouch.
                     if (safeToAttack && possibleBlockers.size() >= 2) {
                         boolean hasTrample9 = attacker.getAbilities().containsKey(TrampleAbility.getInstance().getId());
                         boolean hasIndestructible9 = attacker.getAbilities().containsKey(IndestructibleAbility.getInstance().getId());
@@ -1421,6 +1427,8 @@ public class ComputerPlayer6 extends ComputerPlayer {
                             }
                         }
                     }
+
+                    } // end !game.isSimulation() — Sprints 7, 9, 12, 15
 
                     // add attacker to the next list of all attackers that can safely attack
                     if (safeToAttack) {
