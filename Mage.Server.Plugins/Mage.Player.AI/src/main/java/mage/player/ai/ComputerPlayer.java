@@ -174,6 +174,10 @@ public class ComputerPlayer extends PlayerImpl {
                 if (!perm.getControllerId().equals(getId())) {
                     int rawScore = mage.player.ai.score.GameStateEvaluator2.evaluatePermanent(perm, game, false);
                     if (rawScore < PossibleTargetsComparator.MIN_REMOVAL_TARGET_SCORE) {
+                        game.fireStatusEvent("[AI:" + getName() + "] [REMOVAL] Skipping " + perm.getName()
+                                + " as target — too weak (score " + rawScore
+                                + ", threshold " + PossibleTargetsComparator.MIN_REMOVAL_TARGET_SCORE
+                                + "). Not worth the removal.", false, false);
                         continue; // skip — not worth using removal here
                     }
                 }

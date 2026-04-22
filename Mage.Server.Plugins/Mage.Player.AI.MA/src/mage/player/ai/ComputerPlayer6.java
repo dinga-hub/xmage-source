@@ -1016,9 +1016,8 @@ public class ComputerPlayer6 extends ComputerPlayer {
                             usedBlockerIds.add(dtOpt.get().getId());
                             coveredAttackerIds.add(atk.getId());
                             blocked = true;
-                            aiLog(game, "Deathtouch block: " + dtOpt.get().getName()
-                                    + " blocks " + atk.getName()
-                                    + " (dt=" + dtScore + " vs atk=" + atkScore + ")");
+                            aiLog(game, "[BLOCK] " + dtOpt.get().getName() + " (deathtouch) blocks " + atk.getName()
+                                    + " — kills on contact, risking only " + dtScore + " pts against a " + atkScore + " pt threat.");
                         }
                     }
                 }
@@ -1077,9 +1076,8 @@ public class ComputerPlayer6 extends ComputerPlayer {
                             blocked = true;
                         }
                         coveredAttackerIds.add(atk.getId());
-                        aiLog(game, "Gang-block: " + gangSet.size() + "x expendable on "
-                                + atk.getName() + " (atk=" + atkScore
-                                + ", threshold<" + expThreshold + ")");
+                        aiLog(game, "[BLOCK] Throwing " + gangSet.size() + " small creatures at " + atk.getName()
+                                + " — their threat (" + atkScore + " pts) is too high to let through, each blocker worth less than " + expThreshold + " pts.");
                     }
                 }
             }
@@ -1118,8 +1116,8 @@ public class ComputerPlayer6 extends ComputerPlayer {
                             player.declareBlocker(player.getId(), chump.getId(), attacker.getId(), game);
                             unblockedDamage -= attacker.getPower().getValue();
                             blocked = true;
-                            aiLog(game, "Chump block: " + chump.getName() + " → " + attacker.getName()
-                                    + " (remaining=" + unblockedDamage + ", life=" + player.getLife() + ")");
+                            aiLog(game, "[BLOCK] " + chump.getName() + " chump-blocks " + attacker.getName()
+                                    + " to reduce incoming damage — still " + unblockedDamage + " damage coming, I have " + player.getLife() + " life.");
                         }
                     }
                 }
@@ -1217,6 +1215,20 @@ public class ComputerPlayer6 extends ComputerPlayer {
                 threatCache.put(opId, GameStateEvaluator2.evaluatePlayerThreat(opId, game));
             }
             sortedOpponents.sort((a, b) -> Integer.compare(threatCache.get(b), threatCache.get(a)));
+
+            // Log threat order so observers can see who the AI is prioritising
+            if (!game.isSimulation()) {
+                StringBuilder sbThreat = new StringBuilder("[ATTACK] Threat order: ");
+                for (int i = 0; i < sortedOpponents.size(); i++) {
+                    UUID opId = sortedOpponents.get(i);
+                    sbThreat.append(game.getPlayer(opId).getName())
+                            .append(" (").append(threatCache.get(opId)).append(" pts)");
+                    if (i < sortedOpponents.size() - 1) {
+                        sbThreat.append(" > ");
+                    }
+                }
+                aiLog(game, sbThreat.toString());
+            }
 
             // Multiplayer improvement: if any opponent has a significant board presence, reserve
             // our best creature as a blocker rather than committing everything to offense.
@@ -1323,7 +1335,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                                     b.getToughness().getValue() <= attacker.getPower().getValue());
                             if (!canKillAnyBlocker) {
                                 safeToAttack = false; // safe but useless — keep as blocker instead
-                                aiLog(game, "Hold " + attacker.getName() + ": no offensive value (can't kill blockers, no trample/lifelink)");
+                                aiLog(game, "[HOLD] " + attacker.getName() + " stays back — attacking gains nothing (no trample/lifelink, can't kill any blocker).");
                             }
                         }
                     }
@@ -1374,7 +1386,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                                 }
                                 if (attackerScore > killedScore) {
                                     safeToAttack = false; // unfavorable trade against gang-block
-                                    aiLog(game, "Hold " + attacker.getName() + ": gang-block unfavorable (atk=" + attackerScore + " kills=" + killedScore + ", " + blockersNeeded + " blockers)");
+                                    aiLog(game, "[HOLD] " + attacker.getName() + " stays back — " + blockersNeeded + " blockers could gang-kill it (worth " + attackerScore + " pts), it would only take out " + killedScore + " pts in return. Bad trade.");
                                 }
                             }
                         }
@@ -1390,7 +1402,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                             && attacker.getPower().getValue() < 3
                             && !attacker.getAbilities().containsKey(FlyingAbility.getInstance().getId())) {
                         safeToAttack = false;
-                        aiLog(game, "Hold " + attacker.getName() + ": early game restraint (turn " + game.getTurnNum() + ", power=" + attacker.getPower().getValue() + ")");
+                        aiLog(game, "[HOLD] " + attacker.getName() + " stays home — turn " + game.getTurnNum() + " is too early to tap a power " + attacker.getPower().getValue() + " creature. Better as a blocker.");
                     }
 
                     // Sprint 15 — High-value piece protection: don't risk attacking with a
@@ -1422,7 +1434,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                                 }
                                 if (expCount15 >= 2 && cumPow15 >= attacker.getToughness().getValue()) {
                                     safeToAttack = false;
-                                    aiLog(game, "Hold " + attacker.getName() + ": high-value protection (score=" + atkScore15 + ", " + expCount15 + "x expendable can kill)");
+                                    aiLog(game, "[HOLD] " + attacker.getName() + " is too valuable to risk (" + atkScore15 + " pts) — " + expCount15 + " cheap blockers could pile up and kill it.");
                                 }
                             }
                         }
@@ -1450,7 +1462,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                     }
                     if (bestDefender != null) {
                         attackersToCheck.remove(bestDefender);
-                        aiLog(game, "Reserve blocker: " + bestDefender.getName() + " held back (maxThreat=" + maxOpponentThreat + ")");
+                        aiLog(game, "[HOLD] " + bestDefender.getName() + " held back as emergency blocker — opponent threat level is " + maxOpponentThreat + " pts.");
                     }
                 }
 

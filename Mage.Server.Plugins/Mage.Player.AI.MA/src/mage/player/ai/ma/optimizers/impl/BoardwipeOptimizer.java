@@ -72,9 +72,17 @@ public class BoardwipeOptimizer extends BaseTreeOptimizer {
 
         // suppress boardwipe if opponents don't have a significant advantage
         if (opponentsTotalBoardScore < myBoardScore * BOARDWIPE_THRESHOLD_MULTIPLIER) {
+            int neededOpponentScore = (int) (myBoardScore * BOARDWIPE_THRESHOLD_MULTIPLIER);
+            String botName = game.getPlayer(botId) != null ? game.getPlayer(botId).getName() : "AI";
             for (Ability ability : actions) {
                 if (isBoardwipe(ability)) {
                     actionsToRemove.add(ability);
+                    mage.cards.Card card = game.getCard(ability.getSourceId());
+                    String spellName = card != null ? card.getName() : "boardwipe";
+                    game.fireStatusEvent("[AI:" + botName + "] [BOARDWIPE] Holding " + spellName
+                            + " — board favors me (my board: " + myBoardScore
+                            + " pts, opponents: " + opponentsTotalBoardScore
+                            + " pts — need " + neededOpponentScore + " to justify a wipe).", false, false);
                 }
             }
         }
