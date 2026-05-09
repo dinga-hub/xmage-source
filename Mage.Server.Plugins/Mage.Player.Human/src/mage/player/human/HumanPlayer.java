@@ -1237,8 +1237,18 @@ public class HumanPlayer extends PlayerImpl {
                                     quickStop = true;
                                     break;
                                 }
-                                // Catch custom effects (e.g. BloodMoney) by scanning staticText
-                                String text = effect.getText(null);
+                                // Catch custom effects (e.g. BloodMoney) by scanning rule text.
+                                // Never pass null to Effect.getText(Mode): many effects NPE (e.g. ExileTargetEffect).
+                                Mode ruleMode = ability.getModes().getMode();
+                                if (ruleMode == null) {
+                                    continue;
+                                }
+                                String text;
+                                try {
+                                    text = effect.getText(ruleMode);
+                                } catch (RuntimeException e) {
+                                    continue;
+                                }
                                 if (text != null) {
                                     String lower = text.toLowerCase(java.util.Locale.ENGLISH);
                                     if (lower.contains("destroy all")
