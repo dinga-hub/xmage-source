@@ -12,6 +12,7 @@ import mage.abilities.effects.Effects;
 import mage.abilities.effects.RequirementEffect;
 import mage.abilities.effects.common.DestroyAllEffect;
 import mage.abilities.effects.common.DamageAllEffect;
+import mage.abilities.effects.common.DamagePlayersEffect;
 import mage.abilities.effects.common.ExileAllEffect;
 import mage.abilities.effects.common.ReturnToHandFromBattlefieldAllEffect;
 import mage.abilities.effects.common.SacrificeAllEffect;
@@ -1160,6 +1161,89 @@ public class HumanPlayer extends PlayerImpl {
         return true;
     }
 
+    /**
+     * Smart Skip (F5/F9/F11): true if an opponent's stack object targets this player or their
+     * permanents, or has mass removal / damage-to-each-opponent style effects.
+     */
+    private boolean shouldSmartStopForOpponentStack(Game game) {
+        for (StackObject stackObject : game.getStack()) {
+            if (playerId.equals(stackObject.getControllerId())) {
+                continue;
+            }
+            Ability ability = stackObject.getStackAbility();
+            if (ability == null) {
+                continue;
+            }
+            if (stackAbilityTargetsPlayerOrControlledPermanent(ability, game)) {
+                return true;
+            }
+            if (stackAbilityHasMassRemovalOrOpponentDamage(ability)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean stackAbilityTargetsPlayerOrControlledPermanent(Ability ability, Game game) {
+        Set<UUID> targetIds = new HashSet<>(CardUtil.getAllSelectedTargets(ability, game));
+        for (Target target : ability.getAllSelectedTargets()) {
+            targetIds.addAll(target.getTargets());
+        }
+        for (Effect effect : ability.getEffects()) {
+            TargetPointer pointer = effect.getTargetPointer();
+            if (pointer != null) {
+                targetIds.addAll(pointer.getTargets(game, ability));
+            }
+        }
+        for (UUID targetId : targetIds) {
+            if (playerId.equals(targetId)) {
+                return true;
+            }
+            Permanent permanent = game.getPermanentOrLKIBattlefield(targetId);
+            if (permanent != null && playerId.equals(permanent.getControllerId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean stackAbilityHasMassRemovalOrOpponentDamage(Ability ability) {
+        Mode ruleMode = ability.getModes().getMode();
+        for (Effect effect : ability.getEffects()) {
+            if (effect instanceof DestroyAllEffect
+                    || effect instanceof DamageAllEffect
+                    || effect instanceof ExileAllEffect
+                    || effect instanceof SacrificeAllEffect
+                    || effect instanceof ReturnToHandFromBattlefieldAllEffect
+                    || effect instanceof BoostAllEffect
+                    || effect instanceof DamagePlayersEffect) {
+                return true;
+            }
+            if (ruleMode == null) {
+                continue;
+            }
+            String text;
+            try {
+                text = effect.getText(ruleMode);
+            } catch (RuntimeException e) {
+                continue;
+            }
+            if (text == null) {
+                continue;
+            }
+            String lower = text.toLowerCase(java.util.Locale.ENGLISH);
+            if (lower.contains("destroy all")
+                    || lower.contains("exile all")
+                    || lower.contains("sacrifice all")
+                    || lower.contains("damage to all")
+                    || lower.contains("damage to each")
+                    || (lower.contains("each opponent") && lower.contains("damage"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     public boolean priority(Game game) {
         passed = false;
@@ -1200,71 +1284,15 @@ public class HumanPlayer extends PlayerImpl {
                     boolean canStopOnZero = possibleBlockersCount == 0 && getControllingPlayersUserData(game).getUserSkipPrioritySteps().isStopOnDeclareBlockersWithZeroPermanents();
                     quickStop = canStopOnAny || canStopOnZero;
                 }
+            }
 
-                // Smart Skip: stop if an opponent's spell/ability on the stack targets our permanents
-                // or has a mass-removal effect (boardwipe). Only active while F9 (passedAllTurns) is on.
-                if (!quickStop && passedAllTurns && !game.getStack().isEmpty()) {
-                    for (StackObject stackObject : game.getStack()) {
-                        if (playerId.equals(stackObject.getControllerId())) {
-                            continue; // ignore own spells
-                        }
-                        Ability ability = stackObject.getStackAbility();
-                        if (ability == null) {
-                            continue;
-                        }
-                        // Check targeted removal: any target points to a permanent we control
-                        for (Target target : ability.getTargets()) {
-                            for (UUID targetId : target.getTargets()) {
-                                Permanent permanent = game.getPermanent(targetId);
-                                if (permanent != null && playerId.equals(permanent.getControllerId())) {
-                                    quickStop = true;
-                                    break;
-                                }
-                            }
-                            if (quickStop) break;
-                        }
-                        // Check boardwipe: mass-removal effects (false positives are acceptable).
-                        // Two-pass: known Effect subclasses first, then staticText keywords for
-                        // custom OneShotEffect implementations like BloodMoney.
-                        if (!quickStop) {
-                            for (Effect effect : ability.getEffects()) {
-                                if (effect instanceof DestroyAllEffect
-                                        || effect instanceof DamageAllEffect
-                                        || effect instanceof ExileAllEffect
-                                        || effect instanceof SacrificeAllEffect
-                                        || effect instanceof ReturnToHandFromBattlefieldAllEffect
-                                        || effect instanceof BoostAllEffect) {
-                                    quickStop = true;
-                                    break;
-                                }
-                                // Catch custom effects (e.g. BloodMoney) by scanning rule text.
-                                // Never pass null to Effect.getText(Mode): many effects NPE (e.g. ExileTargetEffect).
-                                Mode ruleMode = ability.getModes().getMode();
-                                if (ruleMode == null) {
-                                    continue;
-                                }
-                                String text;
-                                try {
-                                    text = effect.getText(ruleMode);
-                                } catch (RuntimeException e) {
-                                    continue;
-                                }
-                                if (text != null) {
-                                    String lower = text.toLowerCase(java.util.Locale.ENGLISH);
-                                    if (lower.contains("destroy all")
-                                            || lower.contains("exile all")
-                                            || lower.contains("sacrifice all")
-                                            || lower.contains("damage to all")
-                                            || lower.contains("damage to each")) {
-                                        quickStop = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if (quickStop) break;
-                    }
-                }
+            // Smart Skip: stop on opponent removal, boardwipe, damage to you, or damage to each opponent.
+            // Outside isGameUnderControl() so it works on opponents' turns (e.g. Path on your commander).
+            if (!quickStop
+                    && (passedAllTurns || passedUntilEndOfTurn || passedUntilEndStepBeforeMyTurn)
+                    && !game.getStack().isEmpty()
+                    && shouldSmartStopForOpponentStack(game)) {
+                quickStop = true;
             }
 
             // SKIP - use the skip actions only if the player itself controls its turn
