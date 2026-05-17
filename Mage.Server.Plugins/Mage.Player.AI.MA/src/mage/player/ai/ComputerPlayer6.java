@@ -57,6 +57,13 @@ public class ComputerPlayer6 extends ComputerPlayer {
     // Sprint Debug: set to true to log AI decisions to the game log for tuning/validation
     private static final boolean AI_DEBUG_LOG = false;
 
+    // Sprint 16 — cross-opponent chump reserve (declareAttackers)
+    private static final int DEFENDER_THRESHOLD = 3000;
+    private static final int HIGH_VALUE_THRESHOLD = 1200;
+    private static final int CHUMP_RESERVE_MAX_SCORE = 900;
+    private static final int CHUMP_THREAT_MIN_POWER = 5;
+    private static final int MAX_CHUMPS_RESERVED = 3;
+
     // same params as Executors.newFixedThreadPool
     // no needs errors check in afterExecute here cause that pool used for FutureTask with result check already
     private static final ExecutorService threadPoolSimulations = new ThreadPoolExecutor(
@@ -942,6 +949,93 @@ public class ComputerPlayer6 extends ComputerPlayer {
         }
     }
 
+    /** High-value engine / commander — not ideal as planned sacrifice blockers. */
+    private static boolean isEnginePiece(Permanent permanent, Game game) {
+        return GameStateEvaluator2.evaluatePermanent(permanent, game, false) >= HIGH_VALUE_THRESHOLD;
+    }
+
+    /**
+     * Expendable chump (tokens, vanilla) — good to hold vs cross-opponent ground threats.
+     * Mirrors Sprint 13b ratio when board has a scored threat permanent.
+     */
+    private static boolean isExpendableChump(Permanent permanent, Game game, int maxBoardThreatPermScore) {
+        int score = GameStateEvaluator2.evaluatePermanent(permanent, game, false);
+        if (score >= HIGH_VALUE_THRESHOLD) {
+            return false;
+        }
+        if (score <= CHUMP_RESERVE_MAX_SCORE) {
+            return true;
+        }
+        return maxBoardThreatPermScore > 0 && score < (maxBoardThreatPermScore * 25 / 100);
+    }
+
+    /** Opponent creature our ground chumps can meaningfully block (no flying on threat). */
+    private static boolean isGroundBlockableThreat(Permanent threat, Game game) {
+        if (!threat.isCreature(game)) {
+            return false;
+        }
+        if (threat.getPower().getValue() < CHUMP_THREAT_MIN_POWER) {
+            return false;
+        }
+        return !threat.getAbilities().containsKey(FlyingAbility.getInstance().getId());
+    }
+
+    private static final class OpponentCombatThreatInfo {
+        int maxGroundThreatPower;
+        int maxBoardThreatPermScore;
+        int blockableThreatCount;
+    }
+
+    private static OpponentCombatThreatInfo scanOpponentCombatThreats(Game game, List<UUID> opponents) {
+        OpponentCombatThreatInfo info = new OpponentCombatThreatInfo();
+        for (UUID opId : opponents) {
+            for (Permanent perm : game.getBattlefield().getAllActivePermanents(opId)) {
+                if (!perm.isCreature(game)) {
+                    continue;
+                }
+                int permScore = GameStateEvaluator2.evaluatePermanent(perm, game, false);
+                if (permScore > info.maxBoardThreatPermScore) {
+                    info.maxBoardThreatPermScore = permScore;
+                }
+                if (isGroundBlockableThreat(perm, game)) {
+                    int pow = perm.getPower().getValue();
+                    if (pow > info.maxGroundThreatPower) {
+                        info.maxGroundThreatPower = pow;
+                    }
+                    info.blockableThreatCount++;
+                }
+            }
+        }
+        return info;
+    }
+
+    /**
+     * Before attacking, reserve lowest-score expendable creatures as chumps vs other players' boards.
+     */
+    private Set<UUID> reserveExpendableChumps(Game game, boolean underThreat,
+            OpponentCombatThreatInfo threatInfo, List<Permanent> availableAttackers) {
+        Set<UUID> reserved = new HashSet<>();
+        if (!underThreat || game.isSimulation() || threatInfo.maxGroundThreatPower == 0) {
+            return reserved;
+        }
+        int reservesNeeded = Math.min(MAX_CHUMPS_RESERVED, threatInfo.blockableThreatCount);
+        if (reservesNeeded <= 0) {
+            return reserved;
+        }
+        List<Permanent> candidates = availableAttackers.stream()
+                .filter(p -> isExpendableChump(p, game, threatInfo.maxBoardThreatPermScore))
+                .sorted(Comparator.comparingInt(p -> GameStateEvaluator2.evaluatePermanent(p, game, false)))
+                .collect(Collectors.toList());
+        for (int i = 0; i < Math.min(reservesNeeded, candidates.size()); i++) {
+            Permanent chump = candidates.get(i);
+            reserved.add(chump.getId());
+            aiLog(game, "[HOLD] " + chump.getName() + " held as expendable chump (score "
+                    + GameStateEvaluator2.evaluatePermanent(chump, game, false) + ") vs ground threat power "
+                    + threatInfo.maxGroundThreatPower);
+        }
+        return reserved;
+    }
+
     private void declareBlockers(Game game, UUID activePlayerId) {
         game.fireEvent(new GameEvent(GameEvent.EventType.DECLARE_BLOCKERS_STEP_PRE, null, null, activePlayerId));
         if (!game.replaceEvent(GameEvent.getEvent(GameEvent.EventType.DECLARING_BLOCKERS, activePlayerId, activePlayerId))) {
@@ -1230,9 +1324,8 @@ public class ComputerPlayer6 extends ComputerPlayer {
                 aiLog(game, sbThreat.toString());
             }
 
-            // Multiplayer improvement: if any opponent has a significant board presence, reserve
-            // our best creature as a blocker rather than committing everything to offense.
-            // This prevents over-attacking into a strong opponent and leaving ourselves exposed.
+            // Sprint 16: if any opponent has significant board presence, reserve expendable chumps
+            // (low score) for cross-opponent defense — not high-value engines (see reserveExpendableChumps).
             int maxOpponentThreat = 0;
             for (UUID opponentId : sortedOpponents) {
                 int t = threatCache.get(opponentId);
@@ -1243,8 +1336,11 @@ public class ComputerPlayer6 extends ComputerPlayer {
 
             // Threshold: roughly equivalent to an opponent having a decent board
             // (e.g. a 3/3 + 2/2 = ~1600 perm score x3 = ~4800; we use 3000 as trigger)
-            final int DEFENDER_THRESHOLD = 3000;
             final boolean underThreat = maxOpponentThreat > DEFENDER_THRESHOLD;
+
+            OpponentCombatThreatInfo opponentThreatInfo = scanOpponentCombatThreats(game, sortedOpponents);
+            List<Permanent> allAvailableAttackers = super.getAvailableAttackers(game);
+            Set<UUID> reservedChumpIds = reserveExpendableChumps(game, underThreat, opponentThreatInfo, allAvailableAttackers);
 
             // find safe attackers (can't be killed by blockers)
             for (UUID defenderId : sortedOpponents) {
@@ -1322,6 +1418,24 @@ public class ComputerPlayer6 extends ComputerPlayer {
                     // only apply on the real board (isSimulation() == false).
                     if (!game.isSimulation()) {
 
+                    if (reservedChumpIds.contains(attacker.getId())) {
+                        safeToAttack = false;
+                    }
+
+                    // Sprint 16 — Cross-opponent: expendable chips vs global ground threats when
+                    // this attack target has no blockers (tokens stay home for the 9/9 on another player).
+                    if (safeToAttack && underThreat && possibleBlockers.isEmpty()
+                            && opponentThreatInfo.maxGroundThreatPower > 0
+                            && isExpendableChump(attacker, game, opponentThreatInfo.maxBoardThreatPermScore)
+                            && !isEnginePiece(attacker, game)
+                            && opponentThreatInfo.maxGroundThreatPower >= attacker.getToughness().getValue()) {
+                        safeToAttack = false;
+                        aiLog(game, "[HOLD] " + attacker.getName() + " stays back — expendable chump (score "
+                                + GameStateEvaluator2.evaluatePermanent(attacker, game, false)
+                                + ") vs global ground threat power " + opponentThreatInfo.maxGroundThreatPower
+                                + "; target has no blockers.");
+                    }
+
                     // Sprint 7 — Skip attacks with no offensive value: attacker survives but can't
                     // kill any blocker and can't deal direct damage. Tapping a creature for zero
                     // result is a wasted action.
@@ -1392,17 +1506,16 @@ public class ComputerPlayer6 extends ComputerPlayer {
                         }
                     }
 
-                    // Early game restraint (Sprint 12): in turns 1-4, tapping small ground creatures
-                    // for 1-2 chip damage is net-negative in Commander. Development and board presence
-                    // are more valuable than early aggression. Keep creatures with power < 3 back as
-                    // potential blockers/ramp unless they have evasion (flying = can attack safely).
-                    // Alpha-strike kill shots are already handled above and bypass this check.
+                    // Early game restraint (Sprint 12): in turns 1-4, tapping small expendable ground
+                    // creatures for chip damage is net-negative. Engines (high score) may still attack if safe.
                     if (safeToAttack
                             && game.getTurnNum() <= 4
                             && attacker.getPower().getValue() < 3
-                            && !attacker.getAbilities().containsKey(FlyingAbility.getInstance().getId())) {
+                            && !attacker.getAbilities().containsKey(FlyingAbility.getInstance().getId())
+                            && isExpendableChump(attacker, game, opponentThreatInfo.maxBoardThreatPermScore)) {
                         safeToAttack = false;
-                        aiLog(game, "[HOLD] " + attacker.getName() + " stays home — turn " + game.getTurnNum() + " is too early to tap a power " + attacker.getPower().getValue() + " creature. Better as a blocker.");
+                        aiLog(game, "[HOLD] " + attacker.getName() + " stays home — turn " + game.getTurnNum()
+                                + " early expendable (power " + attacker.getPower().getValue() + "). Better as a blocker.");
                     }
 
                     // Sprint 15 — High-value piece protection: don't risk attacking with a
@@ -1412,7 +1525,6 @@ public class ComputerPlayer6 extends ComputerPlayer {
                     // Exceptions: trample (damage leaks through), indestructible, deathtouch.
                     if (safeToAttack) {
                         int atkScore15 = GameStateEvaluator2.evaluatePermanent(attacker, game, false);
-                        final int HIGH_VALUE_THRESHOLD = 1200;
                         if (atkScore15 >= HIGH_VALUE_THRESHOLD && possibleBlockers.size() >= 2) {
                             boolean hasTrample15 = attacker.getAbilities().containsKey(TrampleAbility.getInstance().getId());
                             boolean hasIndest15 = attacker.getAbilities().containsKey(IndestructibleAbility.getInstance().getId());
@@ -1445,24 +1557,6 @@ public class ComputerPlayer6 extends ComputerPlayer {
                     // add attacker to the next list of all attackers that can safely attack
                     if (safeToAttack) {
                         attackersToCheck.add(attacker);
-                    }
-                }
-
-                // Reserve best blocker: if we are under threat and have multiple safe attackers,
-                // keep the highest-value creature (by P/T sum) back to defend.
-                if (underThreat && attackersToCheck.size() > 1) {
-                    Permanent bestDefender = null;
-                    int bestDefenderValue = -1;
-                    for (Permanent candidate : attackersToCheck) {
-                        int value = candidate.getPower().getValue() + candidate.getToughness().getValue();
-                        if (value > bestDefenderValue) {
-                            bestDefenderValue = value;
-                            bestDefender = candidate;
-                        }
-                    }
-                    if (bestDefender != null) {
-                        attackersToCheck.remove(bestDefender);
-                        aiLog(game, "[HOLD] " + bestDefender.getName() + " held back as emergency blocker — opponent threat level is " + maxOpponentThreat + " pts.");
                     }
                 }
 
