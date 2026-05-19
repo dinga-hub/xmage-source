@@ -5,6 +5,7 @@ import mage.abilities.Ability;
 import mage.abilities.ActivatedAbility;
 import mage.abilities.SpellAbility;
 import mage.abilities.StaticAbility;
+import mage.abilities.common.AttacksTriggeredAbility;
 import mage.abilities.common.PassAbility;
 import mage.abilities.effects.Effect;
 import mage.abilities.effects.SearchEffect;
@@ -55,7 +56,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
     private static final int MAX_SIMULATED_NODES_PER_ERROR = 5100; // TODO: debug only, set low value to find big calculations
 
     // Sprint Debug: set to true to log AI decisions to the game log for tuning/validation
-    private static final boolean AI_DEBUG_LOG = false;
+    private static final boolean AI_DEBUG_LOG = true;
 
     // Sprint 16 — cross-opponent chump reserve (declareAttackers)
     private static final int DEFENDER_THRESHOLD = 3000;
@@ -63,6 +64,10 @@ public class ComputerPlayer6 extends ComputerPlayer {
     private static final int CHUMP_RESERVE_MAX_SCORE = 900;
     private static final int CHUMP_THREAT_MIN_POWER = 5;
     private static final int MAX_CHUMPS_RESERVED = 3;
+
+    // Sprint 17 — coordinated risk/reward attack pass
+    private static final int TRIGGER_RELEVANT_MIN = 400;   // attackTriggerValue floor to always attack regardless of risk
+    private static final int DISPOSABLE_BLOCKER_MAX_SCORE = 350; // tokens/vanilla 1/1 ~250–350 pts
 
     // same params as Executors.newFixedThreadPool
     // no needs errors check in afterExecute here cause that pool used for FutureTask with result check already
@@ -1036,6 +1041,165 @@ public class ComputerPlayer6 extends ComputerPlayer {
         return reserved;
     }
 
+    // ── Sprint 17 helpers ────────────────────────────────────────────────────
+
+    // True if this blocker is disposable — a token or vanilla with very low evaluatePermanent score.
+    private boolean isDisposableBlocker(Permanent blk, Game game) {
+        return GameStateEvaluator2.evaluatePermanent(blk, game, false) < DISPOSABLE_BLOCKER_MAX_SCORE;
+    }
+
+    // Returns a bonus value if this attacker has a "whenever ~ attacks" trigger ability.
+    // Intentionally conservative: only detects AttacksTriggeredAbility; other trigger types
+    // that happen to need attacking may be missed, but this prevents false positives.
+    private static int attackTriggerValue(Permanent attacker, Game game) {
+        for (Ability ab : attacker.getAbilities()) {
+            if (ab instanceof AttacksTriggeredAbility) {
+                return HIGH_VALUE_THRESHOLD / 2; // ~600 pts — triggers are generally worth attacking for
+            }
+        }
+        return 0;
+    }
+
+    // Estimates total unblocked damage AI would receive from ALL opponents next rotation,
+    // assuming myAttackerIds creatures are tapped (unavailable to block).
+    // Greedy assignment: best available blocker covers each threat, respecting flying/reach.
+    // Does not model menace, shadow, protection, etc. (intentionally simple).
+    private int incomingDamageNextRotation(Game game, Set<UUID> myAttackerIds) {
+        Player me = game.getPlayer(playerId);
+        if (me == null) return 0;
+
+        // Pool of AI's available blockers (untapped, not in attack)
+        List<Permanent> availBlockers = new ArrayList<>();
+        for (Permanent p : game.getBattlefield().getAllActivePermanents(playerId)) {
+            if (!p.isCreature(game) || p.isTapped() || myAttackerIds.contains(p.getId())) continue;
+            availBlockers.add(p);
+        }
+
+        Set<UUID> usedBlockers = new HashSet<>();
+        int totalIncoming = 0;
+
+        for (UUID opId : game.getOpponents(playerId, true)) {
+            Player opponent = game.getPlayer(opId);
+            if (opponent == null || !opponent.isInGame()) continue;
+
+            List<Permanent> oppCreatures = new ArrayList<>();
+            for (Permanent p : game.getBattlefield().getAllActivePermanents(opId)) {
+                if (!p.isCreature(game) || p.isTapped() || p.getPower().getValue() <= 0) continue;
+                oppCreatures.add(p);
+            }
+            // Worst threats first
+            oppCreatures.sort((a, b) -> Integer.compare(b.getPower().getValue(), a.getPower().getValue()));
+
+            for (Permanent threat : oppCreatures) {
+                boolean threatFlying = threat.getAbilities().containsKey(FlyingAbility.getInstance().getId());
+
+                // Find strongest available blocker that can reach this threat
+                Permanent bestBlocker = null;
+                int bestPow = -1;
+                for (Permanent blk : availBlockers) {
+                    if (usedBlockers.contains(blk.getId())) continue;
+                    boolean blkFlying = blk.getAbilities().containsKey(FlyingAbility.getInstance().getId());
+                    boolean blkReach = blk.getAbilities().containsKey(ReachAbility.getInstance().getId());
+                    if (threatFlying && !blkFlying && !blkReach) continue;
+                    if (blk.getPower().getValue() > bestPow) {
+                        bestPow = blk.getPower().getValue();
+                        bestBlocker = blk;
+                    }
+                }
+
+                if (bestBlocker != null) {
+                    usedBlockers.add(bestBlocker.getId());
+                    // Trample leaks excess damage past blocker
+                    if (threat.getAbilities().containsKey(TrampleAbility.getInstance().getId())) {
+                        int excess = threat.getPower().getValue() - bestBlocker.getToughness().getValue();
+                        if (excess > 0) totalIncoming += excess;
+                    }
+                } else {
+                    // Unblockable → all power goes to face
+                    totalIncoming += threat.getPower().getValue();
+                }
+            }
+        }
+        return totalIncoming;
+    }
+
+    // Estimates the value delivered by attacking with swarm against defenderId.
+    // Value = face-damage component (unblocked power × 150) + valuable blocker forced off board
+    //         + attack trigger bonuses.
+    // Assumes defender blocks with cheapest willing blockers to minimise loss.
+    // Face-damage weight (150) is intentionally low — points, not life total; keeps units comparable.
+    private int swarmAttackValue(Game game, UUID defenderId, List<Permanent> swarm) {
+        if (swarm.isEmpty()) return 0;
+        Player defender = game.getPlayer(defenderId);
+        if (defender == null || !defender.isInGame()) return 0;
+
+        // Cheapest-first: defender uses disposable chumps first to absorb attackers
+        List<Permanent> defBlockers = new ArrayList<>(defender.getAvailableBlockers(game));
+        defBlockers.sort(Comparator.comparingInt(p -> p.getToughness().getValue()));
+
+        // Strongest attackers first (maximise pressure on blockers)
+        List<Permanent> sortedSwarm = swarm.stream()
+                .sorted((a, b) -> Integer.compare(b.getPower().getValue(), a.getPower().getValue()))
+                .collect(Collectors.toList());
+
+        Set<UUID> usedBlockers = new HashSet<>();
+        int value = 0;
+
+        for (Permanent atk : sortedSwarm) {
+            boolean atkFlying = atk.getAbilities().containsKey(FlyingAbility.getInstance().getId());
+            boolean atkTrample = atk.getAbilities().containsKey(TrampleAbility.getInstance().getId());
+
+            // Find defender's cheapest willing blocker for this attacker.
+            // Defender only blocks if (a) blocker is disposable (cheap, willing to chump), OR
+            // (b) blocker survives (no loss), OR (c) trade is profitable (attacker score >= blocker score).
+            // This prevents the model from assuming a defender would block a 2/2 with their key 10/10.
+            int atkScore = GameStateEvaluator2.evaluatePermanent(atk, game, false);
+            Permanent chosenBlocker = null;
+            for (Permanent blk : defBlockers) {
+                if (usedBlockers.contains(blk.getId())) continue;
+                boolean blkFlying = blk.getAbilities().containsKey(FlyingAbility.getInstance().getId());
+                boolean blkReach = blk.getAbilities().containsKey(ReachAbility.getInstance().getId());
+                if (atkFlying && !blkFlying && !blkReach) continue;
+                boolean blkDisposable = isDisposableBlocker(blk, game);
+                boolean blkSurvives = blk.getToughness().getValue() > atk.getPower().getValue();
+                boolean canKillAttacker = blk.getPower().getValue() >= atk.getToughness().getValue();
+                int blkScore = GameStateEvaluator2.evaluatePermanent(blk, game, false);
+                boolean profitableTrade = canKillAttacker && atkScore >= blkScore;
+                if (blkDisposable || blkSurvives || profitableTrade) {
+                    chosenBlocker = blk;
+                    break;
+                }
+            }
+
+            if (chosenBlocker == null) {
+                // Unblocked — damage lands on player
+                value += atk.getPower().getValue() * 150;
+                if (atkTrample) {
+                    // Trample: all damage through (no blocker)
+                    // already counted above
+                }
+            } else {
+                usedBlockers.add(chosenBlocker.getId());
+                if (atkTrample) {
+                    int excess = atk.getPower().getValue() - chosenBlocker.getToughness().getValue();
+                    if (excess > 0) value += excess * 150;
+                }
+                // Killing a valuable (non-disposable) blocker has real board value
+                if (atk.getPower().getValue() >= chosenBlocker.getToughness().getValue()
+                        && !isDisposableBlocker(chosenBlocker, game)) {
+                    value += GameStateEvaluator2.evaluatePermanent(chosenBlocker, game, false);
+                }
+            }
+
+            // Attack-trigger bonus (e.g. draw a card on attack)
+            value += attackTriggerValue(atk, game);
+        }
+
+        return value;
+    }
+
+    // ── end Sprint 17 helpers ─────────────────────────────────────────────────
+
     private void declareBlockers(Game game, UUID activePlayerId) {
         game.fireEvent(new GameEvent(GameEvent.EventType.DECLARE_BLOCKERS_STEP_PRE, null, null, activePlayerId));
         if (!game.replaceEvent(GameEvent.getEvent(GameEvent.EventType.DECLARING_BLOCKERS, activePlayerId, activePlayerId))) {
@@ -1559,6 +1723,85 @@ public class ComputerPlayer6 extends ComputerPlayer {
                         attackersToCheck.add(attacker);
                     }
                 }
+
+                // ── Sprint 17 — Coordinated risk/reward review ─────────────────────────
+                // The per-attacker filters above (Sprints 7/9/15/16) evaluated each creature
+                // in isolation. This second pass looks at the SWARM holistically vs this
+                // defender: does the package deliver enough value to justify the exposure?
+                // Operates on attackers slated for THIS defender (not yet declared via alpha-strike).
+                if (!game.isSimulation()) {
+                    List<Permanent> tentative = attackersToCheck.stream()
+                            .filter(p -> !p.isAttacking())
+                            .collect(Collectors.toList());
+
+                    if (!tentative.isEmpty()) {
+                        // Alpha-strike exemption: if the swing is decisive (kills defender),
+                        // never second-guess. The lethal kill outvalues any next-turn risk.
+                        List<Permanent> blockersNow17 = defender.getAvailableBlockers(game);
+                        boolean isDecisive = !CombatUtil.canKillOpponent(game, tentative, blockersNow17, defender).isEmpty();
+
+                        if (!isDecisive) {
+                            Set<UUID> tentativeIds = tentative.stream().map(Permanent::getId).collect(Collectors.toSet());
+                            int myLife = game.getPlayer(playerId).getLife();
+                            int incoming = incomingDamageNextRotation(game, tentativeIds);
+
+                            // (1) Survival rule — drop lowest-value attackers until AI survives next rotation.
+                            // Damage-to-AI is non-negotiable: even a relevant trigger doesn't justify dying.
+                            while (incoming >= myLife && !tentative.isEmpty()) {
+                                Permanent worst = tentative.stream()
+                                        .min(Comparator.comparingInt(p -> GameStateEvaluator2.evaluatePermanent(p, game, false)))
+                                        .orElse(null);
+                                if (worst == null) break;
+                                tentative.remove(worst);
+                                tentativeIds.remove(worst.getId());
+                                attackersToCheck.remove(worst);
+                                aiLog(game, "[HOLD-LETHAL] " + worst.getName() + " stays back — attacking left AI in lethal range (incoming "
+                                        + incoming + " vs " + myLife + " HP).");
+                                incoming = incomingDamageNextRotation(game, tentativeIds);
+                            }
+
+                            // (2) Value rule — drop attackers whose defensive contribution outweighs
+                            // what they deliver on offense. Iterates until no more drops happen.
+                            // Scale: incoming damage × 150 matches face-damage weight in swarmAttackValue.
+                            int delivered = swarmAttackValue(game, defenderId, tentative);
+                            boolean changed = true;
+                            while (changed) {
+                                changed = false;
+                                for (Permanent atk : new ArrayList<>(tentative)) {
+                                    // Bypass: relevant attack triggers always justify attacking (item v of philosophy).
+                                    if (attackTriggerValue(atk, game) >= TRIGGER_RELEVANT_MIN) continue;
+
+                                    Set<UUID> withoutThis = new HashSet<>(tentativeIds);
+                                    withoutThis.remove(atk.getId());
+                                    List<Permanent> swarmWithout = tentative.stream()
+                                            .filter(p -> !p.getId().equals(atk.getId()))
+                                            .collect(Collectors.toList());
+
+                                    int incomingWithout = incomingDamageNextRotation(game, withoutThis);
+                                    int deliveredWithout = swarmAttackValue(game, defenderId, swarmWithout);
+
+                                    int damagePrevented = incoming - incomingWithout; // raw damage points saved by holding back
+                                    int riskDeltaScaled = damagePrevented * 150;      // scale to swarmAttackValue units
+                                    int returnDelta = delivered - deliveredWithout;   // value lost by holding back
+
+                                    if (riskDeltaScaled >= returnDelta) {
+                                        tentative.remove(atk);
+                                        tentativeIds.remove(atk.getId());
+                                        attackersToCheck.remove(atk);
+                                        incoming = incomingWithout;
+                                        delivered = deliveredWithout;
+                                        changed = true;
+                                        aiLog(game, "[HOLD-VALUE] " + atk.getName() + " stays back — defense saves "
+                                                + damagePrevented + " dmg (" + riskDeltaScaled + " pts) > attack adds "
+                                                + returnDelta + " pts.");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // ── end Sprint 17 ───────────────────────────────────────────────────────
 
                 // find possible target for attack (priority: planeswalker -> battle -> player)
                 int totalPowerOfAttackers = 0;
