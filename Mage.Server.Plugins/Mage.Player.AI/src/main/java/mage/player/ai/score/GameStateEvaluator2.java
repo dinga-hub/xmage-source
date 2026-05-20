@@ -189,14 +189,16 @@ public final class GameStateEvaluator2 {
 
     // ── Sprint 18: Mana Reservation Helpers ────────────────────────────────────
 
-    private enum SelfPosition { ARCHENEMY, LEADING, PARITY, TRAILING }
+    // Promoted to public in Sprint 19 so CounterOptimizer / ProtectionOptimizer can
+    // reuse the same self-position thresholds Sprint 18 already calibrated.
+    public enum SelfPosition { ARCHENEMY, LEADING, PARITY, TRAILING }
 
     /**
      * Classifies the AI player's board position relative to opponents.
      * Uses evaluatePlayerThreat scores (board + ramp + hand + life).
      * Thresholds: archenemy >1.4× avg, leading >avg, trailing <0.7× avg.
      */
-    private static SelfPosition classifySelfPosition(UUID playerId, Game game) {
+    public static SelfPosition classifySelfPosition(UUID playerId, Game game) {
         int selfThreat = evaluatePlayerThreat(playerId, game);
         int totalOpp = 0;
         int oppCount = 0;
@@ -221,7 +223,7 @@ public final class GameStateEvaluator2 {
      * Threshold: nobody has 4+ non-land permanents.
      * (More accurate than a turn number: faster decks develop in 2-3 turns.)
      */
-    private static boolean isEarlyGame(Game game) {
+    public static boolean isEarlyGame(Game game) {
         for (Player p : game.getState().getPlayers().values()) {
             if (p == null || !p.isInGame()) continue;
             long nonLands = game.getBattlefield().getAllActivePermanents(p.getId()).stream()
@@ -270,8 +272,10 @@ public final class GameStateEvaluator2 {
     /**
      * Returns true if the card grants mass protection (survives a boardwipe when cast).
      * See MASS_PROTECTION_SUPPLEMENTARY for the detection rationale.
+     * Promoted to public in Sprint 19 so ProtectionOptimizer can identify mass-protection
+     * spells in the candidate action list.
      */
-    private static boolean isMassProtectionCard(Card card) {
+    public static boolean isMassProtectionCard(Card card) {
         for (Ability cardAbility : card.getAbilities()) {
             for (Effect effect : cardAbility.getEffects()) {
                 // Phase-out = all your permanents become untargetable and survive boardwipes
@@ -299,7 +303,7 @@ public final class GameStateEvaluator2 {
      * Triggers when: 4+ creatures, OR 2+ high-value permanents (≥1200 pts), OR
      * a big evasive creature (power ≥5 + flying/trample).
      */
-    private static boolean isBoardStrong(UUID playerId, Game game) {
+    public static boolean isBoardStrong(UUID playerId, Game game) {
         java.util.List<Permanent> perms = game.getBattlefield().getAllActivePermanents(playerId);
         long creatures = perms.stream().filter(p -> p.isCreature(game)).count();
         if (creatures >= 4) return true;

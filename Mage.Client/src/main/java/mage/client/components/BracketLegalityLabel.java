@@ -3,6 +3,7 @@ package mage.client.components;
 import mage.MageObject;
 import mage.cards.Card;
 import mage.cards.decks.Deck;
+import mage.cards.repository.GameChangerRegistry;
 import mage.client.util.GUISizeHelper;
 import org.apache.log4j.Logger;
 
@@ -217,63 +218,10 @@ public class BracketLegalityLabel extends LegalityLabel {
         this.foundGameChangers.clear();
 
         if (fullGameChanges.isEmpty()) {
-            // https://mtg.wiki/page/Game_Changers
-            // TODO: share list with AbstractCommander and edh power level
-            fullGameChanges.addAll(Arrays.asList(
-                    "Ad Nauseam",
-                    "Ancient Tomb",
-                    "Aura Shards",
-                    "Biorhythm",
-                    "Bolas's Citadel",
-                    "Braids, Cabal Minion",
-                    "Demonic Tutor",
-                    "Drannith Magistrate",
-                    "Chrome Mox",
-                    "Coalition Victory",
-                    "Consecrated Sphinx",
-                    "Crop Rotation",
-                    "Cyclonic Rift",
-                    "Enlightened Tutor",
-                    "Farewell",
-                    "Field of the Dead",
-                    "Fierce Guardianship",
-                    "Force of Will",
-                    "Gaea's Cradle",
-                    "Gamble",
-                    "Gifts Ungiven",
-                    "Glacial Chasm",
-                    "Grand Arbiter Augustin IV",
-                    "Grim Monolith",
-                    "Humility",
-                    "Imperial Seal",
-                    "Intuition",
-                    "Jeska's Will",
-                    "Lion's Eye Diamond",
-                    "Mana Vault",
-                    "Mishra's Workshop",
-                    "Mox Diamond",
-                    "Mystical Tutor",
-                    "Narset, Parter of Veils",
-                    "Natural Order",
-                    "Necropotence",
-                    "Notion Thief",
-                    "Rhystic Study",
-                    "Opposition Agent",
-                    "Orcish Bowmasters",
-                    "Panoptic Mirror",
-                    "Seedborn Muse",
-                    "Serra's Sanctum",
-                    "Smothering Tithe",
-                    "Survival of the Fittest",
-                    "Teferi's Protection",
-                    "Tergrid, God of Fright",
-                    "Thassa's Oracle",
-                    "The One Ring",
-                    "The Tabernacle at Pendrell Vale",
-                    "Underworld Breach",
-                    "Vampiric Tutor",
-                    "Worldly Tutor"
-            ));
+            // List moved to mage.cards.repository.GameChangerRegistry so the server-side AI
+            // (Sprint 19 CounterOptimizer/ProtectionOptimizer) can consume it too.
+            // Single source of truth — update there when the official list changes.
+            fullGameChanges.addAll(GameChangerRegistry.getAll());
         }
 
         Stream.concat(deck.getCards().stream(), deck.getSideboard().stream())

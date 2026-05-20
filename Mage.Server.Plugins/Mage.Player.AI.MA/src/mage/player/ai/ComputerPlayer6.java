@@ -136,6 +136,8 @@ public class ComputerPlayer6 extends ComputerPlayer {
         optimizers.add(new OutcomeOptimizer());
         optimizers.add(new BoardwipeOptimizer());     // multiplayer: suppress boardwipes when bot has board advantage
         optimizers.add(new InstantTimingOptimizer()); // multiplayer: hold instants for opponent turns; no tap-cost waste before combat
+        optimizers.add(new CounterOptimizer());       // Sprint 19: gate counter activations by stack category + self-position
+        optimizers.add(new ProtectionOptimizer());    // Sprint 19: gate mass-protection by stack threat + board strength
     }
 
     public ComputerPlayer6(String name, RangeOfInfluence range, int skill) {
@@ -1635,7 +1637,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                             && !isEnginePiece(attacker, game)
                             && opponentThreatInfo.maxGroundThreatPower >= attacker.getToughness().getValue()) {
                         safeToAttack = false;
-                        aiLog(game, "[HOLD] " + attacker.getName() + " stays back — expendable chump (score "
+                        aiLog(game, "[HOLD vs " + defender.getName() + "] " + attacker.getName() + " stays back — expendable chump (score "
                                 + GameStateEvaluator2.evaluatePermanent(attacker, game, false)
                                 + ") vs global ground threat power " + opponentThreatInfo.maxGroundThreatPower
                                 + "; target has no blockers.");
@@ -1654,7 +1656,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                                     b.getToughness().getValue() <= attacker.getPower().getValue());
                             if (!canKillAnyBlocker) {
                                 safeToAttack = false; // safe but useless — keep as blocker instead
-                                aiLog(game, "[HOLD] " + attacker.getName() + " stays back — attacking gains nothing (no trample/lifelink, can't kill any blocker).");
+                                aiLog(game, "[HOLD vs " + defender.getName() + "] " + attacker.getName() + " stays back — attacking gains nothing (no trample/lifelink, can't kill any blocker).");
                             }
                         }
                     }
@@ -1705,7 +1707,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                                 }
                                 if (attackerScore > killedScore) {
                                     safeToAttack = false; // unfavorable trade against gang-block
-                                    aiLog(game, "[HOLD] " + attacker.getName() + " stays back — " + blockersNeeded + " blockers could gang-kill it (worth " + attackerScore + " pts), it would only take out " + killedScore + " pts in return. Bad trade.");
+                                    aiLog(game, "[HOLD vs " + defender.getName() + "] " + attacker.getName() + " stays back — " + blockersNeeded + " blockers could gang-kill it (worth " + attackerScore + " pts), it would only take out " + killedScore + " pts in return. Bad trade.");
                                 }
                             }
                         }
@@ -1719,7 +1721,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                             && !attacker.getAbilities().containsKey(FlyingAbility.getInstance().getId())
                             && isExpendableChump(attacker, game, opponentThreatInfo.maxBoardThreatPermScore)) {
                         safeToAttack = false;
-                        aiLog(game, "[HOLD] " + attacker.getName() + " stays home — turn " + game.getTurnNum()
+                        aiLog(game, "[HOLD vs " + defender.getName() + "] " + attacker.getName() + " stays home — turn " + game.getTurnNum()
                                 + " early expendable (power " + attacker.getPower().getValue() + "). Better as a blocker.");
                     }
 
@@ -1751,7 +1753,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                                 }
                                 if (expCount15 >= 2 && cumPow15 >= attacker.getToughness().getValue()) {
                                     safeToAttack = false;
-                                    aiLog(game, "[HOLD] " + attacker.getName() + " is too valuable to risk (" + atkScore15 + " pts) — " + expCount15 + " cheap blockers could pile up and kill it.");
+                                    aiLog(game, "[HOLD vs " + defender.getName() + "] " + attacker.getName() + " is too valuable to risk (" + atkScore15 + " pts) — " + expCount15 + " cheap blockers could pile up and kill it.");
                                 }
                             }
                         }
@@ -1796,7 +1798,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                                 tentative.remove(worst);
                                 tentativeIds.remove(worst.getId());
                                 attackersToCheck.remove(worst);
-                                aiLog(game, "[HOLD-LETHAL] " + worst.getName() + " stays back — attacking left AI in lethal range (incoming "
+                                aiLog(game, "[HOLD-LETHAL vs " + defender.getName() + "] " + worst.getName() + " stays back — attacking left AI in lethal range (incoming "
                                         + incoming + " vs " + myLife + " HP).");
                                 incoming = incomingDamageNextRotation(game, tentativeIds);
                             }
@@ -1832,7 +1834,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
                                         incoming = incomingWithout;
                                         delivered = deliveredWithout;
                                         changed = true;
-                                        aiLog(game, "[HOLD-VALUE] " + atk.getName() + " stays back — defense saves "
+                                        aiLog(game, "[HOLD-VALUE vs " + defender.getName() + "] " + atk.getName() + " stays back — defense saves "
                                                 + damagePrevented + " dmg (" + riskDeltaScaled + " pts) > attack adds "
                                                 + returnDelta + " pts.");
                                         break;
