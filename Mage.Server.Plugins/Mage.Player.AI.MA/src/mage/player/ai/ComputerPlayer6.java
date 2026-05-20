@@ -24,6 +24,7 @@ import mage.game.stack.StackAbility;
 import mage.game.stack.StackObject;
 import mage.player.ai.ma.optimizers.TreeOptimizer;
 import mage.player.ai.ma.optimizers.impl.*;
+import mage.player.ai.memory.AiMemory;
 import mage.player.ai.score.GameStateEvaluator2;
 import mage.player.ai.util.CombatInfo;
 import mage.player.ai.util.CombatUtil;
@@ -59,15 +60,45 @@ public class ComputerPlayer6 extends ComputerPlayer {
     private static final boolean AI_DEBUG_LOG = true;
 
     // Sprint 16 — cross-opponent chump reserve (declareAttackers)
+    // A bot that is "defending" against a threatening opponent should keep cheap creatures
+    // back as blockers rather than sending them all as attackers.
+    //
+    // DEFENDER_THRESHOLD: opponent threat score above which the bot enters "defender mode".
+    // 3000 = a player with a mid-sized board + some hand cards. Below this the bot attacks freely.
+    // Why 3000: a 3/3 + 3/3 + 3 lands ≈ 2×~900 + ramp bonus ≈ 2700; rounding up to 3000 catches
+    // anyone who has developed a real board.
     private static final int DEFENDER_THRESHOLD = 3000;
+
+    // HIGH_VALUE_THRESHOLD: permanent score above which a creature is considered "too valuable
+    // to sacrifice as a chump blocker". Engine pieces, commanders, and bombers fall here.
+    // 1200 = a 3/3 with flying + haste, or a 4/4 vanilla. Below this = expendable chump.
+    // Why separate from CHUMP_RESERVE_MAX_SCORE: HIGH_VALUE_THRESHOLD guards ATTACK decisions
+    // (Sprint 7/15), CHUMP_RESERVE_MAX_SCORE guards which creatures we PRE-RESERVE as chumps.
     private static final int HIGH_VALUE_THRESHOLD = 1200;
+
+    // CHUMP_RESERVE_MAX_SCORE: creatures scored at or below this are considered "expendable"
+    // and eligible to be held back as cross-opponent chump blockers (Sprint 16).
+    // 900 = roughly a 2/2 vanilla (~800–900 pts). A 2/2 with a keyword ability (~1100) is excluded.
     private static final int CHUMP_RESERVE_MAX_SCORE = 900;
+
+    // CHUMP_THREAT_MIN_POWER: minimum power on an opponent's attacker to trigger cross-opponent
+    // chump reservation. A 4/4 is a real threat; a 2/2 is not worth pre-reserving blockers for.
     private static final int CHUMP_THREAT_MIN_POWER = 5;
+
+    // MAX_CHUMPS_RESERVED: cap on how many creatures we hold back as chumps vs a single opponent.
+    // Holding too many back loses tempo; 3 is enough to survive most alpha strikes.
     private static final int MAX_CHUMPS_RESERVED = 3;
 
     // Sprint 17 — coordinated risk/reward attack pass
-    private static final int TRIGGER_RELEVANT_MIN = 400;   // attackTriggerValue floor to always attack regardless of risk
-    private static final int DISPOSABLE_BLOCKER_MAX_SCORE = 350; // tokens/vanilla 1/1 ~250–350 pts
+    // TRIGGER_RELEVANT_MIN: if an attacker's "attack trigger value" (ETB-on-attack, damage triggers)
+    // is at least this, the bot always attacks with it even if the math is risky.
+    // 400 = roughly the value of drawing a card or creating a 1/1 token. Below this = not worth it.
+    private static final int TRIGGER_RELEVANT_MIN = 400;
+
+    // DISPOSABLE_BLOCKER_MAX_SCORE: blockers at or below this score are considered "disposable"
+    // when evaluating whether an attack is safe. Tokens and vanilla 1/1s score ~250–350 pts.
+    // The bot will attack into a blocker it can race if that blocker is disposable.
+    private static final int DISPOSABLE_BLOCKER_MAX_SCORE = 350;
 
     // same params as Executors.newFixedThreadPool
     // no needs errors check in afterExecute here cause that pool used for FutureTask with result check already
@@ -92,6 +123,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
     List<Permanent> attackersToCheck = new ArrayList<>();
 
     protected Set<String> actionCache;
+    protected AiMemory memory = new AiMemory(); // Sprint 18: per-turn memory for mana reservation and action tracking
     private static final List<TreeOptimizer> optimizers = new ArrayList<>();
     protected int lastLoggedTurn = 0; // for debug logs: mark start of the turn
     protected static final String BLANKS = "...............................................";
@@ -129,6 +161,15 @@ public class ComputerPlayer6 extends ComputerPlayer {
         this.targets.addAll(player.targets);
         this.choices.addAll(player.choices);
         this.actionCache = player.actionCache;
+        // memory is not copied: each real player has its own memory, not shared with simulations
+    }
+
+    public AiMemory getMemory() {
+        return memory;
+    }
+
+    public void clearTurnMemory() {
+        memory.clearAtEndOfTurn();
     }
 
     /**

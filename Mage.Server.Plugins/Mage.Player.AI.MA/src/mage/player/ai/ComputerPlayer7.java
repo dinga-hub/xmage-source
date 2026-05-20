@@ -104,6 +104,7 @@ public class ComputerPlayer7 extends ComputerPlayer6 {
             case END_TURN:
             case CLEANUP:
                 actionCache.clear();
+                clearTurnMemory(); // Sprint 18: release reserved mana at end of turn
                 pass(game);
                 return false;
         }

@@ -1,10 +1,18 @@
 package mage.player.ai.score;
 
+import mage.abilities.effects.common.PhaseOutAllEffect;
+import mage.abilities.effects.common.continuous.GainAbilityAllEffect;
+import mage.abilities.keyword.FlyingAbility;
+import mage.abilities.keyword.TrampleAbility;
+import mage.cards.Card;
 import mage.game.Game;
 import mage.game.permanent.Permanent;
 import mage.players.Player;
 import org.apache.log4j.Logger;
 
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 import mage.abilities.Ability;
 import mage.abilities.effects.Effect;
@@ -30,6 +38,38 @@ public final class GameStateEvaluator2 {
     // or use a combat trick. Scoring it positively deters wasting mana on trivial effects.
     // Value: spending {1}{B} (2 mana) on a useless ability must provide >200 score to justify it.
     private static final int FLOATING_MANA_VALUE = 100;
+
+    // Sprint 18: context-sensitive reservation bonus for untapped mana when bot has answers in hand.
+    // The bonus is added per mana that could cover the cheapest instant/protection in hand.
+    // Scale by self-position: archenemy protects lead; trailing focuses on development.
+    // Calibration: ARCHENEMY=300 means a 2-mana Counterspell in hand makes tapping out cost 600 pts —
+    // enough to outweigh most non-essential spells when you're already ahead.
+    private static final int RESERVE_ARCHENEMY_BONUS_PER_MANA = 300;
+    private static final int RESERVE_LEADING_BONUS_PER_MANA = 200;
+    private static final int RESERVE_PARITY_BONUS_PER_MANA = 100;
+    private static final int RESERVE_MASS_PROTECTION_BONUS_PER_MANA = 400;
+
+    // Mass protection detection uses Option C (effect-based primary + small name supplementary).
+    //
+    // Why NOT name-based only: the list is infinite and gets stale with every new set.
+    // Why NOT effect-only: some cards protect via exile-and-return (Eerie Interlude) or complex
+    //   multi-modal effects that don't reduce to a single GainAbilityAllEffect or PhaseOutAllEffect.
+    // Why NOT hexproof: hexproof only blocks targeted removal, not "destroy all" boardwipes.
+    //   (Diego confirmed: hexproof = targeted protection, not mass protection.)
+    //
+    // Primary detection (covers the vast majority of cases automatically):
+    //   - GainAbilityAllEffect whose text contains "indestructible" → Heroic Intervention,
+    //     Unbreakable Formation, Boros Charm mode 2, Flawless Maneuver, Make a Stand, etc.
+    //   - PhaseOutAllEffect → Teferi's Protection (phases out all your permanents)
+    //
+    // Supplementary list (exile-and-return type, not caught by effect scan):
+    //   These achieve the same result (survive a boardwipe) through temporary exile.
+    //   Kept intentionally small — add only when a card is confirmed undetectable by effects.
+    private static final Set<String> MASS_PROTECTION_SUPPLEMENTARY = new HashSet<>(Arrays.asList(
+            "Eerie Interlude",   // exile creatures you control → return after boardwipe resolves
+            "Semester's End",    // exile permanents you control with counters → same
+            "Scapegoat"          // bounce all your creatures → avoids destroy/exile boardwipes
+    ));
 
     public static PlayerEvaluateScore evaluate(UUID playerId, Game game) {
         return evaluate(playerId, game, true);
@@ -128,10 +168,15 @@ public final class GameStateEvaluator2 {
         // justify being cast over passing.
         int playerManaScore = player.getManaPool().getMana().count() * FLOATING_MANA_VALUE;
 
+        // Sprint 18: bonus for keeping untapped mana when bot has relevant answers in hand.
+        // Context-sensitive: higher when archenemy/leading, zero when trailing or early game.
+        int reserveBonus = computeReserveManaBonus(playerId, player, game);
+
         int score = (playerLifeScore - opponentLifeScore)
                 + (playerPermanentsScore - opponentPermanentsScore)
                 + (playerHandScore - opponentHandScore)
-                + playerManaScore; // opportunity cost: preserve mana > waste it on trivial effects
+                + playerManaScore  // opportunity cost: preserve mana > waste it on trivial effects
+                + reserveBonus;    // Sprint 18: context-sensitive mana reservation incentive
         logger.debug(score
                 + " total Score (life:" + (playerLifeScore - opponentLifeScore)
                 + " permanents:" + (playerPermanentsScore - opponentPermanentsScore)
@@ -141,6 +186,191 @@ public final class GameStateEvaluator2 {
                 playerLifeScore, playerHandScore, playerPermanentsScore,
                 opponentLifeScore, opponentHandScore, opponentPermanentsScore);
     }
+
+    // ── Sprint 18: Mana Reservation Helpers ────────────────────────────────────
+
+    private enum SelfPosition { ARCHENEMY, LEADING, PARITY, TRAILING }
+
+    /**
+     * Classifies the AI player's board position relative to opponents.
+     * Uses evaluatePlayerThreat scores (board + ramp + hand + life).
+     * Thresholds: archenemy >1.4× avg, leading >avg, trailing <0.7× avg.
+     */
+    private static SelfPosition classifySelfPosition(UUID playerId, Game game) {
+        int selfThreat = evaluatePlayerThreat(playerId, game);
+        int totalOpp = 0;
+        int oppCount = 0;
+        for (UUID oppId : game.getOpponents(playerId)) {
+            Player opp = game.getPlayer(oppId);
+            if (opp != null && opp.isInGame()) {
+                totalOpp += evaluatePlayerThreat(oppId, game);
+                oppCount++;
+            }
+        }
+        if (oppCount == 0) return SelfPosition.PARITY;
+        int avgOpp = totalOpp / oppCount;
+        if (avgOpp == 0) return SelfPosition.PARITY;
+        if (selfThreat > avgOpp * 140 / 100) return SelfPosition.ARCHENEMY;
+        if (selfThreat > avgOpp) return SelfPosition.LEADING;
+        if (selfThreat < avgOpp * 70 / 100) return SelfPosition.TRAILING;
+        return SelfPosition.PARITY;
+    }
+
+    /**
+     * Early game = no player has developed a meaningful board yet.
+     * Threshold: nobody has 4+ non-land permanents.
+     * (More accurate than a turn number: faster decks develop in 2-3 turns.)
+     */
+    private static boolean isEarlyGame(Game game) {
+        for (Player p : game.getState().getPlayers().values()) {
+            if (p == null || !p.isInGame()) continue;
+            long nonLands = game.getBattlefield().getAllActivePermanents(p.getId()).stream()
+                    .filter(perm -> !perm.isLand(game))
+                    .count();
+            if (nonLands >= 4) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Returns the CMC of the cheapest instant in hand, or 0 if none.
+     * Flash creatures intentionally excluded for simplicity (refine in Sprint 19).
+     */
+    private static int findCheapestInstantCMC(Player player, Game game) {
+        int cheapest = Integer.MAX_VALUE;
+        for (Card card : player.getHand().getCards(game)) {
+            if (card.isInstant() && card.getManaValue() > 0) {
+                cheapest = Math.min(cheapest, card.getManaValue());
+            }
+        }
+        return cheapest == Integer.MAX_VALUE ? 0 : cheapest;
+    }
+
+    /**
+     * Returns the CMC of a mass protection spell in hand, or 0 if none.
+     *
+     * Detection strategy (Option C — see MASS_PROTECTION_SUPPLEMENTARY comment):
+     *   Primary: scan card effects for GainAbilityAllEffect containing "indestructible"
+     *            or PhaseOutAllEffect (covers Teferi's Protection).
+     *   Fallback: supplementary name list for exile-and-return cards.
+     *
+     * Note: hexproof is intentionally excluded — it protects against targeted removal,
+     * not boardwipes. Only indestructible/phase-out survive a "destroy all" or "exile all".
+     */
+    private static int findMassProtectionCMC(Player player, Game game) {
+        for (Card card : player.getHand().getCards(game)) {
+            if (card.getManaValue() <= 0) continue;
+            if (isMassProtectionCard(card)) {
+                return card.getManaValue();
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Returns true if the card grants mass protection (survives a boardwipe when cast).
+     * See MASS_PROTECTION_SUPPLEMENTARY for the detection rationale.
+     */
+    private static boolean isMassProtectionCard(Card card) {
+        for (Ability cardAbility : card.getAbilities()) {
+            for (Effect effect : cardAbility.getEffects()) {
+                // Phase-out = all your permanents become untargetable and survive boardwipes
+                if (effect instanceof PhaseOutAllEffect) {
+                    return true;
+                }
+                // Mass indestructible grant: detect via effect type + text (avoids accessing
+                // the protected `ability` field inside GainAbilityAllEffect directly).
+                // getText(null) returns the staticText or a generated string like
+                // "permanents you control gain indestructible until end of turn".
+                if (effect instanceof GainAbilityAllEffect) {
+                    String text = effect.getText(null);
+                    if (text != null && text.toLowerCase().contains("indestructible")) {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Fallback: exile-and-return type (achieves same result, not caught above)
+        return MASS_PROTECTION_SUPPLEMENTARY.contains(card.getName());
+    }
+
+    /**
+     * Board is strong enough to warrant protecting with mass protection.
+     * Triggers when: 4+ creatures, OR 2+ high-value permanents (≥1200 pts), OR
+     * a big evasive creature (power ≥5 + flying/trample).
+     */
+    private static boolean isBoardStrong(UUID playerId, Game game) {
+        java.util.List<Permanent> perms = game.getBattlefield().getAllActivePermanents(playerId);
+        long creatures = perms.stream().filter(p -> p.isCreature(game)).count();
+        if (creatures >= 4) return true;
+        long highValue = perms.stream()
+                .filter(p -> evaluatePermanent(p, game, false) >= 1200)
+                .count();
+        if (highValue >= 2) return true;
+        return perms.stream()
+                .filter(p -> p.isCreature(game) && p.getPower().getValue() >= 5)
+                .anyMatch(p -> p.getAbilities().containsKey(FlyingAbility.getInstance().getId())
+                        || p.getAbilities().containsKey(TrampleAbility.getInstance().getId()));
+    }
+
+    /** Counts untapped mana-producing permanents (lands + rocks + dorks). */
+    private static int countUntappedMana(UUID playerId, Game game) {
+        return (int) game.getBattlefield().getAllActivePermanents(playerId).stream()
+                .filter(p -> !p.isTapped())
+                .filter(p -> !p.getAbilities()
+                        .getAvailableActivatedManaAbilities(Zone.BATTLEFIELD, playerId, game).isEmpty())
+                .count();
+    }
+
+    /**
+     * Sprint 18: context-sensitive bonus for untapped mana when the bot has relevant answers in hand.
+     *
+     * Logic (from Diego's Commander wisdom):
+     *  - Early game → 0: everyone is developing, tapping out is fine.
+     *  - Trailing → 0: wipe helps, need to catch up.
+     *  - Mass protection in hand + strong board → highest bonus (400/mana): survive a wipe = power swing.
+     *  - Archenemy + instant in hand → 300/mana: protect lead.
+     *  - Leading + instant in hand → 200/mana: moderate incentive to hold.
+     *  - Parity + instant in hand → 100/mana: slight nudge (matches floating mana value).
+     *
+     * Only the mana covering the cheapest answer CMC gets the bonus (cap = cheapestCMC).
+     */
+    private static int computeReserveManaBonus(UUID playerId, Player player, Game game) {
+        if (isEarlyGame(game)) return 0;
+
+        SelfPosition position = classifySelfPosition(playerId, game);
+        if (position == SelfPosition.TRAILING) return 0;
+
+        int untapped = countUntappedMana(playerId, game);
+        if (untapped == 0) return 0;
+
+        // Highest priority: mass protection with a strong board to protect
+        int massCMC = findMassProtectionCMC(player, game);
+        if (massCMC > 0 && isBoardStrong(playerId, game)) {
+            int reservable = Math.min(untapped, massCMC);
+            logger.debug("[RESERVE] Mass protection mode: " + reservable + " mana locked at 400/mana");
+            return reservable * RESERVE_MASS_PROTECTION_BONUS_PER_MANA;
+        }
+
+        // Regular instant reservation
+        int cheapestCMC = findCheapestInstantCMC(player, game);
+        if (cheapestCMC == 0) return 0;
+
+        int bonusPerMana;
+        switch (position) {
+            case ARCHENEMY: bonusPerMana = RESERVE_ARCHENEMY_BONUS_PER_MANA; break;
+            case LEADING:   bonusPerMana = RESERVE_LEADING_BONUS_PER_MANA;   break;
+            case PARITY:    bonusPerMana = RESERVE_PARITY_BONUS_PER_MANA;    break;
+            default:        return 0;
+        }
+
+        int reservable = Math.min(untapped, cheapestCMC);
+        logger.debug("[RESERVE] position=" + position + " cheapestInstant=" + cheapestCMC
+                + " reservable=" + reservable + " bonus=" + (reservable * bonusPerMana));
+        return reservable * bonusPerMana;
+    }
+
+    // ── End Sprint 18 ──────────────────────────────────────────────────────────
 
     /**
      * Evaluates how threatening a player is in a multiplayer game (Commander).

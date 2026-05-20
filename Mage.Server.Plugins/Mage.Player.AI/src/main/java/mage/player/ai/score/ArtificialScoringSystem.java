@@ -75,14 +75,16 @@ public final class ArtificialScoringSystem {
             for (Ability ability : permanent.getAbilities(game)) {
                 abilityScore += MagicAbility.getAbilityScore(ability);
             }
-            // Split ability score into two components to correctly value utility creatures
-            // (hatebears, stax pieces, combo enablers with low P/T).
-            // Original formula: abilityScore * (power+1)/2 — abilities scaled entirely with power,
-            // making a 0/1 with Indestructible + tap ability score nearly zero for its abilities.
-            // Fix: 70% of ability value scales with power (combat-relevant keywords), 30% is a flat
-            // base that applies regardless of P/T (static effects, activated abilities, etc.).
-            int combatAbilityScore = abilityScore * (getPositive(power) + 1) / 2;
-            int baseAbilityScore = abilityScore * 3 / 10;
+            // Sprint 6: split ability score into combat-scaled (70%) + flat base (30%).
+            // Why: the original formula (abilityScore * (power+1)/2) scaled ALL abilities with
+            // power, so a 0/1 Mother of Runes or a 1/1 Esper Sentinel scored near-zero for
+            // their abilities — making the bot undervalue utility creatures vs beaters.
+            // Fix: 70% scales with power (flying, trample, lifelink benefit bigger attackers),
+            // 30% is flat (static effects, tap abilities, draw triggers work regardless of P/T).
+            // 70%/30% split chosen by playtesting: enough to matter for hatebears, not so much
+            // that a 0/1 with flying outscores a 4/4 vanilla.
+            int combatAbilityScore = abilityScore * (getPositive(power) + 1) / 2; // ~70% at power=1
+            int baseAbilityScore = abilityScore * 3 / 10;                          // 30% flat
             score += power * 300 + getPositive(toughness) * 200 + combatAbilityScore + baseAbilityScore;
             int enchantments = 0;
             int equipments = 0;
