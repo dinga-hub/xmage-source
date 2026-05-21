@@ -3,6 +3,7 @@ package mage.player.ai;
 import mage.MageObject;
 import mage.abilities.Ability;
 import mage.abilities.ActivatedAbility;
+import mage.abilities.PlayLandAbility;
 import mage.abilities.SpellAbility;
 import mage.abilities.StaticAbility;
 import mage.abilities.common.AttacksTriggeredAbility;
@@ -33,10 +34,13 @@ import mage.player.ai.score.GameStateEvaluator2;
 import mage.player.ai.util.CombatInfo;
 import mage.player.ai.util.CombatUtil;
 import mage.players.Player;
+import mage.filter.common.FilterLandCard;
+import mage.player.ai.land.LandSearchSelector;
 import mage.target.Target;
 import mage.target.TargetAmount;
 import mage.target.TargetCard;
 import mage.target.common.TargetCardInHand;
+import mage.target.common.TargetCardInLibrary;
 import mage.util.CardUtil;
 import mage.util.RandomUtil;
 import mage.util.ThreadUtils;
@@ -247,6 +251,31 @@ public class ComputerPlayer6 extends ComputerPlayer {
                         getName(),
                         getAbilityAndSourceInfo(game, ability, true)
                 ));
+                // Sprint 32: log land plays in real game chat with scores for all candidates
+                if (AI_DEBUG_LOG && ability instanceof PlayLandAbility) {
+                    Card playedLand = game.getCard(ability.getSourceId());
+                    if (playedLand != null) {
+                        List<Card> handLands = hand.getCards(game).stream()
+                                .filter(c -> c != null && c.isLand(game))
+                                .collect(Collectors.toList());
+                        // Include played land in case it was already removed from hand reference
+                        if (handLands.stream().noneMatch(c -> c.getId().equals(playedLand.getId()))) {
+                            handLands.add(playedLand);
+                        }
+                        List<Card> handAll = new ArrayList<>(hand.getCards(game));
+                        Card commander = mage.player.ai.land.LandRanker.getCommanderFromZone(game, getId());
+                        mage.player.ai.land.LandRanker.RankContext ctx =
+                                new mage.player.ai.land.LandRanker.RankContext(game, getId(), handAll, true, commander);
+                        String scores = handLands.size() > 1
+                                ? mage.player.ai.land.LandRanker.describeScores(handLands, ctx)
+                                : playedLand.getName() + " (only option)";
+                        game.fireStatusEvent(
+                                "[AI:" + getName() + "] [LAND-SELECT] turn=" + game.getTurnNum()
+                                        + " played=" + playedLand.getName()
+                                        + " | " + scores,
+                                false, false);
+                    }
+                }
                 if (!ability.getTargets().isEmpty()) {
                     for (Target target : ability.getTargets()) {
                         for (UUID id : target.getTargets()) {
@@ -1060,6 +1089,31 @@ public class ComputerPlayer6 extends ComputerPlayer {
             }
             return choosePutOnBottom(target, game);
         }
+
+        // Sprint 32: intercept library land searches (fetchlands, Cultivate, Farseek, etc.)
+        // Detection: TargetCardInLibrary whose filter is FilterLandCard OR all matching
+        // candidates in the library are land cards — covers both FilterLandCard subtypes
+        // and SubType-based filters like Farseek ("Plains, Island, Swamp, or Mountain").
+        if (target instanceof TargetCardInLibrary) {
+            TargetCardInLibrary libTarget = (TargetCardInLibrary) target;
+            if (libTarget.getFilter() instanceof FilterLandCard
+                    || allCandidatesAreLands(libTarget, game)) {
+                List<Card> candidates = game.getPlayer(getId()).getLibrary().getCards(game)
+                        .stream()
+                        .filter(c -> libTarget.getFilter().match(c, game))
+                        .collect(Collectors.toList());
+                if (!candidates.isEmpty()) {
+                    String sourceName = (source != null) ? source.getRule() : "unknown";
+                    UUID bestId = LandSearchSelector.selectBestLandFromLibrary(
+                            candidates, game, getId(), sourceName);
+                    if (bestId != null) {
+                        target.add(bestId, game);
+                        return true;
+                    }
+                }
+            }
+        }
+
         return super.chooseTarget(outcome, target, source, game);
     }
 
@@ -1120,6 +1174,19 @@ public class ComputerPlayer6 extends ComputerPlayer {
                         + " lands_dumped=" + landsDumped,
                 false, false);
         return chosen > 0;
+    }
+
+    /**
+     * Sprint 32: returns true if every card in the library that matches the target's
+     * filter is a land. Used to detect SubType-based land searches like Farseek
+     * ("Plains, Island, Swamp, or Mountain") that don't extend {@code FilterLandCard}.
+     */
+    private boolean allCandidatesAreLands(TargetCardInLibrary target, Game game) {
+        List<Card> sample = game.getPlayer(getId()).getLibrary().getCards(game)
+                .stream()
+                .filter(c -> target.getFilter().match(c, game))
+                .collect(Collectors.toList());
+        return !sample.isEmpty() && sample.stream().allMatch(c -> c.isLand(game));
     }
 
     @Override

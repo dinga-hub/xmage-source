@@ -5,6 +5,7 @@ import mage.abilities.Ability;
 import mage.abilities.ActivatedAbility;
 import mage.abilities.TriggeredAbility;
 import mage.abilities.common.PassAbility;
+import mage.player.ai.land.LandSelector;
 import mage.abilities.costs.mana.ManaCost;
 import mage.abilities.costs.mana.ManaCostsImpl;
 import mage.abilities.costs.mana.VariableManaCost;
@@ -107,6 +108,10 @@ public final class SimulatedPlayer2 extends ComputerPlayer {
 
     private void simulateOptions(Game game) {
         List<ActivatedAbility> playables = game.getPlayer(playerId).getPlayable(game, isSimulatedPlayer);
+        // Sprint 32: if multiple lands are playable, reduce to the single best choice
+        // before the minimax tree expands. Fallback: if LandSelector returns unchanged
+        // list (only 1 land or null card lookup), minimax chooses as before.
+        playables = LandSelector.filterToSingleBestLand(playables, game, playerId);
         for (ActivatedAbility ability : playables) {
             if (ability.isManaAbility()) {
                 continue;
