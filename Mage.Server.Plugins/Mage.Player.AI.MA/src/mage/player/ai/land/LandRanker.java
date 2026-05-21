@@ -8,8 +8,12 @@ import mage.abilities.common.EntersBattlefieldTappedAbility;
 import mage.abilities.common.EntersBattlefieldTappedUnlessAbility;
 import mage.abilities.common.FetchLandActivatedAbility;
 import mage.abilities.costs.common.SacrificeSourceCost;
+import mage.abilities.mana.AnyColorLandsProduceManaAbility;
+import mage.abilities.mana.AnyColorManaAbility;
+import mage.abilities.mana.AnyColorPermanentTypesManaAbility;
 import mage.abilities.mana.CommanderColorIdentityManaAbility;
 import mage.abilities.mana.ManaAbility;
+import mage.Mana;
 import mage.cards.Card;
 import mage.constants.CommanderCardType;
 import mage.filter.FilterMana;
@@ -432,8 +436,50 @@ public final class LandRanker {
                 }
             }
         }
+
+        // Fast path: most lands declare their colors explicitly in their color identity
         FilterMana id = land.getColorIdentity();
-        return id != null ? colorIdentitySet(id) : Collections.emptySet();
+        Set<String> fromIdentity = colorIdentitySet(id);
+        if (!fromIdentity.isEmpty()) return fromIdentity;
+
+        // Dynamic resolution for lands with empty color identity that produce colors
+        // at runtime by inspecting the battlefield (Exotic Orchard, Reflecting Pool,
+        // Mana Confluence, City of Brass, etc.). Uses XMage's existing getNetMana(game)
+        // rather than re-implementing the board scan.
+        if (game != null) {
+            for (Ability a : land.getAbilities(game)) {
+                if (a instanceof AnyColorManaAbility) {
+                    // Unconditionally produces any of 5 colors (Mana Confluence, City of Brass)
+                    return new HashSet<>(Arrays.asList("W", "U", "B", "R", "G"));
+                }
+                if (a instanceof AnyColorLandsProduceManaAbility) {
+                    // Colors depend on other lands on battlefield (Exotic Orchard = opponents,
+                    // Reflecting Pool = self). getNetMana() returns empty if no qualifying lands.
+                    Set<String> colors = manaListToColors(
+                            ((AnyColorLandsProduceManaAbility) a).getNetMana(game));
+                    if (!colors.isEmpty()) return colors;
+                }
+                if (a instanceof AnyColorPermanentTypesManaAbility) {
+                    Set<String> colors = manaListToColors(
+                            ((AnyColorPermanentTypesManaAbility) a).getNetMana(game));
+                    if (!colors.isEmpty()) return colors;
+                }
+            }
+        }
+        return Collections.emptySet();
+    }
+
+    /** Converts a list of Mana objects (one color each) to a set of color letter strings. */
+    private static Set<String> manaListToColors(List<Mana> manaList) {
+        Set<String> colors = new HashSet<>();
+        for (Mana m : manaList) {
+            if (m.getWhite() > 0) colors.add("W");
+            if (m.getBlue()  > 0) colors.add("U");
+            if (m.getBlack() > 0) colors.add("B");
+            if (m.getRed()   > 0) colors.add("R");
+            if (m.getGreen() > 0) colors.add("G");
+        }
+        return colors;
     }
 
     // --- Color identity helpers --------------------------------------------

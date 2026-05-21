@@ -87,6 +87,37 @@ public class LandRankerScoringTest extends CardTestPlayerBaseAI {
     }
 
     /**
+     * Exotic Orchard must be preferred over Forest when the opponent controls a Plains
+     * and the hand contains Savannah Lions {W}.
+     *
+     * AnyColorLandsProduceManaAbility.getNetMana(game) resolves dynamically from the
+     * battlefield. Before this fix, getProducedColors() fell back to card.getColorIdentity()
+     * which is empty for Exotic Orchard → score 0. After the fix, it calls getNetMana(game)
+     * and sees W from the opponent's Plains → color-fix bonus for Savannah Lions fires.
+     *
+     * Scores (approx):
+     *   Exotic Orchard: +200 (W fixes Savannah Lions, 0 W sources on board)
+     *                   + untapped bonus if unlocks Lions this turn
+     *                   + 10 diversity = 210+
+     *   Forest         : +10 diversity only (G doesn't fix Savannah Lions {W}) = 10
+     */
+    @Test
+    public void testExoticOrchardPreferredOverForestWhenOpponentHasWhiteLand() {
+        addCard(Zone.HAND, playerA, "Exotic Orchard");
+        addCard(Zone.HAND, playerA, "Forest");
+        addCard(Zone.HAND, playerA, "Savannah Lions"); // {W} — signals white need
+
+        // Opponent controls a Plains → Exotic Orchard can produce W
+        addCard(Zone.BATTLEFIELD, playerB, "Plains");
+
+        setStopAt(1, PhaseStep.BEGIN_COMBAT);
+        execute();
+
+        assertPermanentCount(playerA, "Exotic Orchard", 1);
+        assertPermanentCount(playerA, "Forest", 0);
+    }
+
+    /**
      * Command Tower without a commander in the command zone produces no mana
      * (getProducedColors returns empty). Without colors, its color-fix score is 0
      * and it has no utility trigger → scores 0.
