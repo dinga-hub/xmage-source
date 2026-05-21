@@ -16,8 +16,12 @@ import mage.constants.Outcome;
 import mage.constants.RangeOfInfluence;
 import mage.counters.CounterType;
 import mage.filter.StaticFilters;
+import mage.cards.Card;
+import mage.constants.CommanderCardType;
 import mage.game.Game;
 import mage.game.combat.Combat;
+import mage.player.ai.hand.HandEvaluator;
+import mage.player.ai.hand.HandScore;
 import mage.game.events.GameEvent;
 import mage.game.permanent.Permanent;
 import mage.game.stack.StackAbility;
@@ -932,6 +936,62 @@ public class ComputerPlayer6 extends ComputerPlayer {
             }
         }
         return true;
+    }
+
+    @Override
+    public boolean chooseMulligan(Game game) {
+        if (hand.size() < 6
+                || isTestMode()
+                || game.getClass().getName().contains("Momir")) {
+            return false;
+        }
+
+        try {
+            Card commander = game.getCommanderCardsFromCommandZone(this, CommanderCardType.COMMANDER_OR_OATHBREAKER)
+                    .stream().findFirst().orElse(null);
+
+            HandScore score = HandEvaluator.evaluate(
+                    new ArrayList<>(hand.getCards(game)),
+                    commander,
+                    game,
+                    hand.size()
+            );
+
+            boolean mulligan;
+            String reason;
+            if (score.hardReject) {
+                mulligan = true;
+                reason = "hardReject";
+            } else if (score.autoKeep) {
+                mulligan = false;
+                reason = "autoKeep";
+            } else if (score.landCount < 2 || score.landCount > 5) {
+                mulligan = true;
+                reason = "landCount=" + score.landCount;
+            } else if (score.manaCurveScore <= HandEvaluator.NO_EARLY_PLAYS_PENALTY) {
+                mulligan = true;
+                reason = "noEarlyPlays";
+            } else {
+                mulligan = false;
+                reason = "ok";
+            }
+
+            game.fireStatusEvent(
+                    "[AI:" + getName() + "] [MULLIGAN] hand=" + hand.size()
+                            + " score=" + score.total + " lands=" + score.landCount
+                            + " curve=" + score.manaCurveScore
+                            + " → " + (mulligan ? "MULLIGAN" : "KEEP") + " [" + reason + "]",
+                    false, false);
+
+            return mulligan;
+        } catch (Throwable e) {
+            // Fallback: HandEvaluator unavailable (e.g. mage.jar missing GameChangerRegistry).
+            // Use simple land-count heuristic to avoid crashing the game thread.
+            logger.warn("[AI:" + getName() + "] [MULLIGAN] HandEvaluator error (" + e.getClass().getSimpleName()
+                    + "), using land-count fallback: " + e.getMessage());
+            int lands = hand.getCards(StaticFilters.FILTER_CARD_LAND, game).size();
+            return lands < 2 || lands > hand.size() - 2;
+        }
     }
 
     @Override

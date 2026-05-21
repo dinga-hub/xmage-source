@@ -96,7 +96,7 @@ public final class HandEvaluator {
     private static final int SINGLE_SOURCE_COLOR_PENALTY = -1;
 
     /** Hand has zero on-curve plays at CMC ≤ 3 — nothing develops the board turns 1-3. */
-    private static final int NO_EARLY_PLAYS_PENALTY = -2;
+    public static final int NO_EARLY_PLAYS_PENALTY = -2;
 
     /** Hand covers all of CMC 1, 2, 3 with an on-curve play in each slot. */
     private static final int FULL_CURVE_BONUS = 1;
