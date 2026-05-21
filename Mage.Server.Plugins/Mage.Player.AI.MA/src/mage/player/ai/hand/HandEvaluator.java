@@ -141,7 +141,7 @@ public final class HandEvaluator {
         scoreDraw(hand, game, score);
         scoreThreats(hand, game, score);
         scoreColorCoverage(hand, commander, game, score);
-        scoreManaCurve(hand, game, score);
+        scoreManaCurve(hand, commander, game, score);
         evaluateAutoKeep(hand, game, score);
 
         score.total = score.landScore + score.rampScore + score.drawScore
@@ -407,8 +407,12 @@ public final class HandEvaluator {
      * available. See feedback note 2026-05-20: removals and counters never come
      * down "on curve" so penalising a hand for their CMC distribution would
      * misread Control / Midrange hands as weak.
+     *
+     * Sprint 31.6: the commander itself counts as an on-curve play at its own CMC
+     * (it is always available from the command zone). A CMC 2-3 commander fills a
+     * curve slot the hand would otherwise miss; a CMC 5+ commander adds nothing here.
      */
-    private static void scoreManaCurve(List<Card> hand, Game game, HandScore score) {
+    private static void scoreManaCurve(List<Card> hand, Card commander, Game game, HandScore score) {
         boolean hasOne = false, hasTwo = false, hasThree = false;
         for (Card c : hand) {
             if (c == null || c.isLand()) {
@@ -421,6 +425,13 @@ public final class HandEvaluator {
             if (mv == 1) hasOne = true;
             else if (mv == 2) hasTwo = true;
             else if (mv == 3) hasThree = true;
+        }
+        // Sprint 31.6: commander always available from command zone, fills its CMC slot.
+        if (commander != null && isOnCurvePlay(commander, game)) {
+            int cmv = commander.getManaValue();
+            if (cmv == 1) hasOne = true;
+            else if (cmv == 2) hasTwo = true;
+            else if (cmv == 3) hasThree = true;
         }
 
         int curve = 0;
