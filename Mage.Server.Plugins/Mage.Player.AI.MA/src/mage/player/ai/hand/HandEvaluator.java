@@ -101,6 +101,11 @@ public final class HandEvaluator {
     /** Hand covers all of CMC 1, 2, 3 with an on-curve play in each slot. */
     private static final int FULL_CURVE_BONUS = 1;
 
+    // --- Mulligan thresholds (Sprint 31.5) -----------------------------------
+
+    /** Minimum total to keep a 7-card hand. Research §7: "<2 signals mulligan, ≥5 is strong". */
+    public static final int KEEP_THRESHOLD_7 = 3;
+
     /** How many of the cheapest non-land spells feed the colour-coverage check. */
     private static final int COLOR_COVERAGE_TOP_SPELLS = 3;
 
@@ -166,10 +171,12 @@ public final class HandEvaluator {
         score.landScore = base + floodPenalty;
         score.note("lands=" + lands + " landScore=" + score.landScore);
 
-        // Hard reject thresholds. Below 4-card hands we never auto-reject; the
-        // mulligan policy has to keep what it has at that point anyway.
+        // Hard reject thresholds.
+        // hand=7/6: require 2+ lands. hand=5: 1 land is acceptable, reject only on 0.
+        // hands of 4 or fewer are snap-kept by the mulligan policy (0-land override handled there).
         if ((handSize >= 7 && lands < HARD_REJECT_MIN_LAND_7)
-                || (handSize == 6 && lands < HARD_REJECT_MIN_LAND_6)) {
+                || (handSize == 6 && lands < HARD_REJECT_MIN_LAND_6)
+                || (handSize == 5 && lands == 0)) {
             score.hardReject = true;
             score.note("hard reject: only " + lands + " land(s) in " + handSize + "-card hand");
         }

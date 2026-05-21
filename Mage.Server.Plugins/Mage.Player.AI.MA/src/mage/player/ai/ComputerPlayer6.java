@@ -36,6 +36,7 @@ import mage.players.Player;
 import mage.target.Target;
 import mage.target.TargetAmount;
 import mage.target.TargetCard;
+import mage.target.common.TargetCardInHand;
 import mage.util.CardUtil;
 import mage.util.RandomUtil;
 import mage.util.ThreadUtils;
@@ -940,9 +941,26 @@ public class ComputerPlayer6 extends ComputerPlayer {
 
     @Override
     public boolean chooseMulligan(Game game) {
-        if (hand.size() < 6
-                || isTestMode()
-                || game.getClass().getName().contains("Momir")) {
+        if (isTestMode() || game.getClass().getName().contains("Momir")) {
+            return false;
+        }
+        // Snap-keep at 4 cards or fewer, unless 0 lands — never keep a land-less hand.
+        if (hand.size() < 5) {
+            int landCount = 0;
+            for (Card c : hand.getCards(game)) {
+                if (c != null && c.isLand()) {
+                    landCount++;
+                }
+            }
+            if (landCount == 0) {
+                game.fireStatusEvent(
+                        "[AI:" + getName() + "] [MULLIGAN] hand=" + hand.size() + " → MULLIGAN [noLands]",
+                        false, false);
+                return true;
+            }
+            game.fireStatusEvent(
+                    "[AI:" + getName() + "] [MULLIGAN] hand=" + hand.size() + " → KEEP [snapKeep]",
+                    false, false);
             return false;
         }
 
@@ -965,12 +983,19 @@ public class ComputerPlayer6 extends ComputerPlayer {
             } else if (score.autoKeep) {
                 mulligan = false;
                 reason = "autoKeep";
+            } else if (hand.size() < 7) {
+                // Hands of 5–6: hardReject already handled above. Everything else is acceptable.
+                mulligan = false;
+                reason = "ok";
             } else if (score.landCount < 2 || score.landCount > 5) {
                 mulligan = true;
                 reason = "landCount=" + score.landCount;
             } else if (score.manaCurveScore <= HandEvaluator.NO_EARLY_PLAYS_PENALTY) {
                 mulligan = true;
                 reason = "noEarlyPlays";
+            } else if (score.total < HandEvaluator.KEEP_THRESHOLD_7) {
+                mulligan = true;
+                reason = "belowThreshold7";
             } else {
                 mulligan = false;
                 reason = "ok";
@@ -983,6 +1008,15 @@ public class ComputerPlayer6 extends ComputerPlayer {
                             + " → " + (mulligan ? "MULLIGAN" : "KEEP") + " [" + reason + "]",
                     false, false);
 
+            if (mulligan) {
+                // Hint marker: next chooseTarget(put-on-bottom) should log a matching
+                // [put-on-bottom] line. If it does not, the override detection broke
+                // (e.g. upstream changed the target message). See CLAUDE.md sync notes.
+                game.fireStatusEvent(
+                        "[AI:" + getName() + "] [MULLIGAN] expecting put-on-bottom call",
+                        false, false);
+            }
+
             return mulligan;
         } catch (Throwable e) {
             // Fallback: HandEvaluator unavailable (e.g. mage.jar missing GameChangerRegistry).
@@ -992,6 +1026,100 @@ public class ComputerPlayer6 extends ComputerPlayer {
             int lands = hand.getCards(StaticFilters.FILTER_CARD_LAND, game).size();
             return lands < 2 || lands > hand.size() - 2;
         }
+    }
+
+    /**
+     * Override target selection to fix XMage's London Mulligan "put on bottom of library"
+     * step: by default the bot scores cards by power/toughness so lands (zero score) are
+     * picked first → bot ends up keeping a no-land hand. Here we detect the mulligan
+     * put-back call and route to {@link #choosePutOnBottom} which keeps lands.
+     *
+     * <p>Detection is multi-signal so it survives upstream message changes: turn=0
+     * (pre-game), TargetCardInHand, Outcome.Discard, plus the string match as final
+     * filter. If 3 of the 4 signals match, still activates with a WARN log so the
+     * regression is visible. See CLAUDE.md "Sync com magefree upstream" for the rebase
+     * checklist.
+     */
+    @Override
+    public boolean chooseTarget(Outcome outcome, Target target, Ability source, Game game) {
+        boolean signalTurn = game.getTurnNum() == 0;
+        boolean signalType = target instanceof TargetCardInHand;
+        boolean signalOutcome = outcome == Outcome.Discard;
+        String msg = target.getMessage(game);
+        boolean signalMessage = msg != null && msg.contains("bottom of your library");
+
+        int signalsMatched = (signalTurn ? 1 : 0) + (signalType ? 1 : 0)
+                + (signalOutcome ? 1 : 0) + (signalMessage ? 1 : 0);
+
+        if (signalsMatched >= 3) {
+            if (signalsMatched < 4) {
+                logger.warn("[AI:" + getName() + "] [put-on-bottom] partial signal match ("
+                        + signalsMatched + "/4): turn=" + signalTurn + " type=" + signalType
+                        + " outcome=" + signalOutcome + " msg=" + signalMessage
+                        + " — upstream message may have changed, see CLAUDE.md sync notes");
+            }
+            return choosePutOnBottom(target, game);
+        }
+        return super.chooseTarget(outcome, target, source, game);
+    }
+
+    /**
+     * Smart selection for London Mulligan's "put N cards on the bottom of your library":
+     * dump non-lands by descending CMC first, preserving up to 2 lands in hand. Only
+     * sends lands to the bottom when there are no non-lands left or there are more than
+     * 2 lands available.
+     */
+    private boolean choosePutOnBottom(Target target, Game game) {
+        int needed = target.getMinNumberOfTargets() - target.getTargets().size();
+        if (needed <= 0) {
+            return false;
+        }
+
+        List<Card> nonLands = new ArrayList<>();
+        List<Card> lands = new ArrayList<>();
+        for (Card c : hand.getCards(game)) {
+            if (c == null || target.contains(c.getId())) {
+                continue;
+            }
+            if (c.isLand()) {
+                lands.add(c);
+            } else {
+                nonLands.add(c);
+            }
+        }
+        // Dump highest-CMC non-lands first (most likely to be uncastable early).
+        nonLands.sort((a, b) -> Integer.compare(b.getManaValue(), a.getManaValue()));
+
+        int landsToKeep = Math.min(2, lands.size());
+        int landsAvailableToDump = lands.size() - landsToKeep;
+
+        int chosen = 0;
+        int landsDumped = 0;
+
+        for (Card c : nonLands) {
+            if (chosen >= needed) break;
+            target.add(c.getId(), game);
+            chosen++;
+        }
+        for (int i = 0; i < landsAvailableToDump && chosen < needed; i++) {
+            target.add(lands.get(i).getId(), game);
+            chosen++;
+            landsDumped++;
+        }
+        // Forced floor: only lands left in hand, must send some.
+        for (int i = landsAvailableToDump; i < lands.size() && chosen < needed; i++) {
+            target.add(lands.get(i).getId(), game);
+            chosen++;
+            landsDumped++;
+        }
+
+        int landsKept = lands.size() - landsDumped;
+        game.fireStatusEvent(
+                "[AI:" + getName() + "] [put-on-bottom] needed=" + needed
+                        + " chose=" + chosen + " lands_kept=" + landsKept
+                        + " lands_dumped=" + landsDumped,
+                false, false);
+        return chosen > 0;
     }
 
     @Override
