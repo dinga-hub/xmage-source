@@ -143,6 +143,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
         optimizers.add(new EquipOptimizer());
         optimizers.add(new DiscardCardOptimizer());
         optimizers.add(new OutcomeOptimizer());
+        optimizers.add(new EarlyGameTempoOptimizer()); // Sprint 33B: turns 1-4 ramp/engine priority + suppress noop activations
         optimizers.add(new BoardwipeOptimizer());     // multiplayer: suppress boardwipes when bot has board advantage
         optimizers.add(new InstantTimingOptimizer()); // multiplayer: hold instants for opponent turns; no tap-cost waste before combat
         optimizers.add(new CounterOptimizer());       // Sprint 19: gate counter activations by stack category + self-position

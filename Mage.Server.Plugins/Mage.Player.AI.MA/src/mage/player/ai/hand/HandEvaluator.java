@@ -14,6 +14,7 @@ import mage.abilities.effects.common.DestroyAllEffect;
 import mage.abilities.effects.common.DestroyTargetEffect;
 import mage.abilities.effects.common.DrawCardSourceControllerEffect;
 import mage.abilities.effects.common.ExileAllEffect;
+import mage.constants.Outcome;
 import mage.abilities.effects.common.ExileTargetEffect;
 import mage.abilities.effects.common.SacrificeAllEffect;
 import mage.abilities.effects.common.search.SearchLibraryPutInPlayEffect;
@@ -600,7 +601,15 @@ public final class HandEvaluator {
                 continue;
             }
             for (Effect effect : ability.getEffects()) {
+                // Primary check: known draw-card effect class (e.g. Phyrexian Arena).
                 if (effect instanceof DrawCardSourceControllerEffect) {
+                    return true;
+                }
+                // Secondary check: any triggered effect whose declared Outcome is DrawCard.
+                // This catches cards with custom effect subclasses that still signal draw intent
+                // via Outcome (e.g. Rhystic Study → RhysticStudyDrawEffect extends OneShotEffect
+                // with super(Outcome.DrawCard)).
+                if (effect.getOutcome() == Outcome.DrawCard) {
                     return true;
                 }
             }
@@ -611,5 +620,71 @@ public final class HandEvaluator {
     private static String safeName(Card c) {
         String n = c.getName();
         return n == null ? "?" : n;
+    }
+
+    // -------------------------------------------------------------------------
+    // Public predicates — consumed by Sprint 33B TempoClassifier
+    // Each method is a named wrapper over the inline detection logic already
+    // used inside scoreRamp() / scoreDraw(). The internal scoring methods are
+    // unchanged; only visibility of the underlying helpers is promoted.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Artifact mana source at CMC ≤ 1 (Sol Ring, Mana Crypt, Mana Vault, Moxen,
+     * Lotus Petal). Cast on turn 1 it breaks parity immediately.
+     */
+    public static boolean isFastMana(Card card, Game game) {
+        return card != null
+                && card.isArtifact()
+                && card.getManaValue() <= 1
+                && hasManaAbility(card, game);
+    }
+
+    /**
+     * Artifact mana rock at exactly CMC 2 (Arcane Signet, Talismans, Signets,
+     * Fellwar Stone, Mind Stone). On-curve T2 ramp.
+     */
+    public static boolean isManaRock(Card card, Game game) {
+        return card != null
+                && card.isArtifact()
+                && card.getManaValue() == 2
+                && hasManaAbility(card, game);
+    }
+
+    /**
+     * Creature at CMC ≤ 2 with a mana ability (Llanowar Elves, Birds of Paradise,
+     * Elvish Mystic, Avacyn's Pilgrim, Noble Hierarch, etc.).
+     */
+    public static boolean isManaDork(Card card, Game game) {
+        return card != null
+                && card.isCreature()
+                && card.getManaValue() <= 2
+                && hasManaAbility(card, game);
+    }
+
+    /**
+     * Non-creature spell at CMC ≤ 3 that tutors a land into play or hand
+     * (Cultivate, Kodama's Reach, Rampant Growth, Three Visits, Nature's Lore,
+     * Farseek). Also covers CMC ≤ 3 creature-based land tutors via the creature
+     * branch of {@link #scoreRamp}.
+     */
+    public static boolean isLandTutorSpell(Card card, Game game) {
+        return card != null
+                && !card.isLand()
+                && card.getManaValue() <= 3
+                && hasLandTutorEffect(card, game);
+    }
+
+    /**
+     * Permanent with a triggered ability that draws cards (Rhystic Study,
+     * Phyrexian Arena, Mystic Remora, Esper Sentinel, …). Cantrips (instants /
+     * sorceries with draw) are intentionally excluded — they are one-shot, not
+     * repeating engines.
+     */
+    public static boolean isDrawEngine(Card card, Game game) {
+        return card != null
+                && !card.isInstant()
+                && !card.isSorcery()
+                && hasTriggeredDrawAbility(card, game);
     }
 }
