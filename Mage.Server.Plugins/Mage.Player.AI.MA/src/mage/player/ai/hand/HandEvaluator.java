@@ -16,8 +16,12 @@ import mage.abilities.effects.common.DrawCardSourceControllerEffect;
 import mage.abilities.effects.common.ExileAllEffect;
 import mage.constants.Outcome;
 import mage.abilities.effects.common.ExileTargetEffect;
+import mage.abilities.effects.common.PhaseOutTargetEffect;
 import mage.abilities.effects.common.SacrificeAllEffect;
+import mage.abilities.effects.common.continuous.GainAbilityTargetEffect;
 import mage.abilities.effects.common.search.SearchLibraryPutInPlayEffect;
+import mage.abilities.keyword.HexproofAbility;
+import mage.abilities.keyword.IndestructibleAbility;
 import mage.abilities.mana.ManaAbility;
 import mage.cards.Card;
 import mage.cards.repository.GameChangerRegistry;
@@ -686,5 +690,56 @@ public final class HandEvaluator {
                 && !card.isInstant()
                 && !card.isSorcery()
                 && hasTriggeredDrawAbility(card, game);
+    }
+
+    /**
+     * Instant-speed spell that phases out a single target (Slip Out the Back,
+     * Teferi's Veil mode, etc.). Phase-out is the strongest single-target
+     * protection: the permanent remains under the controller's control but is
+     * invisible to removal and also drops equipment/auras.
+     */
+    public static boolean isPhaseOutProtection(Card card, Game game) {
+        if (card == null || !card.isInstant()) {
+            return false;
+        }
+        for (Ability ability : card.getAbilities(game)) {
+            for (Effect effect : ability.getEffects()) {
+                if (effect instanceof PhaseOutTargetEffect) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Instant-speed spell that grants hexproof or indestructible to a single
+     * target permanent the controller controls (Tamiyo's Safekeeping,
+     * Blossoming Defense, Vines of Vastwood, etc.). Hexproof causes targeted
+     * removal to fizzle; indestructible prevents destroy effects.
+     */
+    public static boolean isHexproofGrantProtection(Card card, Game game) {
+        if (card == null || !card.isInstant()) {
+            return false;
+        }
+        for (Ability ability : card.getAbilities(game)) {
+            for (Effect effect : ability.getEffects()) {
+                if (effect instanceof GainAbilityTargetEffect) {
+                    Ability granted = ((GainAbilityTargetEffect) effect).getGrantedAbility();
+                    if (granted instanceof HexproofAbility || granted instanceof IndestructibleAbility) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Aggregator: true if the card is any recognized single-target protection
+     * instant (phase-out OR hexproof/indestructible grant).
+     */
+    public static boolean isSingleTargetProtectionSpell(Card card, Game game) {
+        return isPhaseOutProtection(card, game) || isHexproofGrantProtection(card, game);
     }
 }

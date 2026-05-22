@@ -147,8 +147,9 @@ public class ComputerPlayer6 extends ComputerPlayer {
         optimizers.add(new BoardwipeOptimizer());     // multiplayer: suppress boardwipes when bot has board advantage
         optimizers.add(new InstantTimingOptimizer()); // multiplayer: hold instants for opponent turns; no tap-cost waste before combat
         optimizers.add(new EndStepManaSinkOptimizer()); // Sprint 33E: promote TIER_8 activations at last opponent's end step
-        optimizers.add(new CounterOptimizer());       // Sprint 19: gate counter activations by stack category + self-position
-        optimizers.add(new ProtectionOptimizer());    // Sprint 19: gate mass-protection by stack threat + board strength
+        optimizers.add(new CounterOptimizer());                 // Sprint 19: gate counter activations by stack category + self-position
+        optimizers.add(new ProtectionOptimizer());               // Sprint 19: gate mass-protection by stack threat + board strength
+        optimizers.add(new SingleTargetProtectionOptimizer());   // Sprint 19B: gate phase-out/hexproof on TARGETED_REMOVAL aimed at engine
     }
 
     public ComputerPlayer6(String name, RangeOfInfluence range, int skill) {

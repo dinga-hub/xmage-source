@@ -3,13 +3,11 @@ package mage.player.ai.ma.optimizers.impl;
 import mage.abilities.Ability;
 import mage.abilities.SpellAbility;
 import mage.cards.Card;
-import mage.cards.repository.GameChangerRegistry;
 import mage.game.Game;
-import mage.game.permanent.Permanent;
 import mage.game.stack.StackObject;
-import mage.players.Player;
 import mage.player.ai.score.GameStateEvaluator2;
 import mage.player.ai.stack.SpellCategory;
+import mage.player.ai.stack.StackTargetingHelper;
 import mage.player.ai.stack.StackThreatClassifier;
 
 import java.util.List;
@@ -152,22 +150,7 @@ public class ProtectionOptimizer extends BaseTreeOptimizer {
     }
 
     private boolean removalTargetsCriticalPiece(StackObject top, UUID botId, Game game) {
-        if (top.getStackAbility() == null) {
-            return false;
-        }
-        Player botPlayer = game.getPlayer(botId);
-        for (mage.target.Target target : top.getStackAbility().getTargets()) {
-            for (UUID targetId : target.getTargets()) {
-                Permanent perm = game.getPermanent(targetId);
-                if (perm == null || !botId.equals(perm.getControllerId())) {
-                    continue;
-                }
-                if (botPlayer != null && game.isCommanderObject(botPlayer, perm)) return true;
-                if (GameChangerRegistry.isGameChanger(perm.getName())) return true;
-                if (GameStateEvaluator2.evaluatePermanent(perm, game, false) >= 1500) return true;
-            }
-        }
-        return false;
+        return !StackTargetingHelper.findCriticalTargetsOnStack(game, botId).isEmpty();
     }
 
     private String playerName(Game game, UUID id) {
