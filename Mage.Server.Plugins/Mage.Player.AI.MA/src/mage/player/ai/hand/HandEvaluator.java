@@ -20,8 +20,6 @@ import mage.abilities.effects.common.PhaseOutTargetEffect;
 import mage.abilities.effects.common.SacrificeAllEffect;
 import mage.abilities.effects.common.continuous.GainAbilityTargetEffect;
 import mage.abilities.effects.common.search.SearchLibraryPutInPlayEffect;
-import mage.abilities.keyword.HexproofAbility;
-import mage.abilities.keyword.IndestructibleAbility;
 import mage.abilities.mana.ManaAbility;
 import mage.cards.Card;
 import mage.cards.repository.GameChangerRegistry;
@@ -722,12 +720,21 @@ public final class HandEvaluator {
         if (card == null || !card.isInstant()) {
             return false;
         }
+        // WHY text-based detection: avoids accessing GainAbilityTargetEffect.ability (protected
+        // field) via a getter in the core JAR. Core modifications create rebase friction with
+        // magefree/mage upstream and require distributing a modified mage.jar to friends —
+        // unsupported by the current XMageAIPatch.exe installer. Static text of
+        // GainAbilityTargetEffect is always set at construction time and reliably contains the
+        // ability keyword (e.g. "hexproof", "indestructible"). See CLAUDE.md §Core policy.
         for (Ability ability : card.getAbilities(game)) {
             for (Effect effect : ability.getEffects()) {
                 if (effect instanceof GainAbilityTargetEffect) {
-                    Ability granted = ((GainAbilityTargetEffect) effect).getGrantedAbility();
-                    if (granted instanceof HexproofAbility || granted instanceof IndestructibleAbility) {
-                        return true;
+                    String text = effect.getText(null);
+                    if (text != null) {
+                        String lower = text.toLowerCase(java.util.Locale.ENGLISH);
+                        if (lower.contains("hexproof") || lower.contains("indestructible")) {
+                            return true;
+                        }
                     }
                 }
             }

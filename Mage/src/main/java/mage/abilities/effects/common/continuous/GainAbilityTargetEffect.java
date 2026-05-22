@@ -24,11 +24,6 @@ public class GainAbilityTargetEffect extends ContinuousEffectImpl {
     private final boolean useOnCard; // only one card per ability supported
     private boolean waitingCardPermanent = false; // wait the permanent from card's resolve (for inner usage only)
 
-    /** Returns the ability this effect grants to the target permanent. */
-    public Ability getGrantedAbility() {
-        return ability;
-    }
-
     public GainAbilityTargetEffect(Ability ability) {
         this(ability, Duration.EndOfTurn);
     }
