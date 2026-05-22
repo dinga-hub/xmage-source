@@ -3,7 +3,9 @@ package mage.player.ai;
 import mage.abilities.Ability;
 import mage.constants.RangeOfInfluence;
 import mage.game.Game;
+import mage.player.ai.memory.AiMemory;
 import mage.player.ai.score.GameStateEvaluator2;
+import mage.player.ai.window.EndStepWindowDetector;
 import org.apache.log4j.Logger;
 
 import java.util.Date;
@@ -102,9 +104,26 @@ public class ComputerPlayer7 extends ComputerPlayer6 {
                 act(game);
                 return true;
             case END_TURN:
+                actionCache.clear();
+                if (EndStepWindowDetector.isLastOpponentEndStepBeforeBot(game, playerId)) {
+                    // Sprint 33E: golden window — mana left open will vanish on cleanup.
+                    // Release Sprint 18 reservation so the full pool is available to the minimax.
+                    memory.clearCategory(AiMemory.MemoryCategory.HELD_MANA_SOURCES_FOR_NEXT_SPELL);
+                    memory.clearCategory(AiMemory.MemoryCategory.HELD_MANA_SOURCES_FOR_MAIN2);
+                    printBattlefieldScore(game, "Sim PRIORITY on END STEP SINK");
+                    if (actions.isEmpty()) {
+                        calculateActions(game);
+                    }
+                    act(game);
+                    clearTurnMemory();
+                    return true;
+                }
+                clearTurnMemory(); // Sprint 18: release reserved mana at end of turn
+                pass(game);
+                return false;
             case CLEANUP:
                 actionCache.clear();
-                clearTurnMemory(); // Sprint 18: release reserved mana at end of turn
+                clearTurnMemory();
                 pass(game);
                 return false;
         }
