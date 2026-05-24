@@ -11,6 +11,7 @@ import mage.constants.Duration;
 import mage.constants.Zone;
 import mage.game.Game;
 import mage.player.ai.hand.HandEvaluator;
+import mage.player.ai.perf.AiPerformanceLog;
 
 import java.util.UUID;
 
@@ -37,6 +38,9 @@ public final class TempoClassifier {
      * @return the appropriate {@link TempoCategory}; never null
      */
     public static TempoCategory classify(Ability ability, Game game, UUID botId) {
+        // Sprint 34: TempoClassifier runs on every candidate action in every node expansion.
+        // High call count here = optimizer pipeline is expensive relative to tree size.
+        AiPerformanceLog.recordTempoClassifierCall();
         // Mana abilities are engine internals, not strategic choices
         if (ability instanceof ManaAbility) {
             return TempoCategory.TIER_OTHER;

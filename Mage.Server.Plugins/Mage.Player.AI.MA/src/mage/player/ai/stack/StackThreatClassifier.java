@@ -24,6 +24,7 @@ import mage.constants.SubType;
 import mage.game.Game;
 import mage.game.stack.Spell;
 import mage.game.stack.StackObject;
+import mage.player.ai.perf.AiPerformanceLog;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -113,6 +114,9 @@ public final class StackThreatClassifier {
      * @param game current game state (used to inspect card type / supertype)
      */
     public static SpellCategory classify(StackObject stackObject, Game game) {
+        // Sprint 34: count calls per addActionsTimed() — classifiers run once per node
+        // expansion that has a stack object, so this is a proxy for stack-reactive decisions.
+        AiPerformanceLog.recordStackClassifierCall();
         if (stackObject == null) {
             return SpellCategory.UNKNOWN;
         }

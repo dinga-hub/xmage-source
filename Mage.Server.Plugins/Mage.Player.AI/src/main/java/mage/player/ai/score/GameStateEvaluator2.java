@@ -19,6 +19,7 @@ import mage.abilities.effects.Effect;
 import mage.abilities.mana.ActivatedManaAbilityImpl;
 import mage.constants.Outcome;
 import mage.constants.Zone;
+import mage.player.ai.perf.AiPerformanceLog;
 
 /**
  * @author nantuko
@@ -76,6 +77,9 @@ public final class GameStateEvaluator2 {
     }
 
     public static PlayerEvaluateScore evaluate(UUID playerId, Game game, boolean useCombatPermanentScore) {
+        // Sprint 34: count evaluator calls per addActionsTimed() to measure α-β tree depth/breadth.
+        // One call per node = one node scored. Total calls = effective simulated nodes.
+        AiPerformanceLog.recordEvaluatorCall();
         // TODO: add multi opponents support, so AI can take better actions
         Player player = game.getPlayer(playerId);
         // must find all leaved opponents

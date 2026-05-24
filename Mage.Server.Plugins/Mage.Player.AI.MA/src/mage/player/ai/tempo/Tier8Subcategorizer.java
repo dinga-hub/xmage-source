@@ -2,6 +2,7 @@ package mage.player.ai.tempo;
 
 import mage.abilities.Ability;
 import mage.constants.Outcome;
+import mage.player.ai.perf.AiPerformanceLog;
 
 /**
  * Maps a TIER_8 activated ability to a Tier8Subcategory for prioritization
@@ -15,6 +16,9 @@ public final class Tier8Subcategorizer {
     private Tier8Subcategorizer() {}
 
     public static Tier8Subcategory classify(Ability ability) {
+        // Sprint 34: Tier8Subcategorizer runs only in EndStepManaSinkOptimizer (stack-size=0,
+        // end step). Lower expected count than TempoClassifier. High count = many TIER_8 actions.
+        AiPerformanceLog.recordTier8ClassifierCall();
         Outcome outcome = effectiveOutcome(ability);
         if (outcome == null) {
             return Tier8Subcategory.OTHER;

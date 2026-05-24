@@ -30,6 +30,7 @@ import mage.game.stack.StackObject;
 import mage.player.ai.ma.optimizers.TreeOptimizer;
 import mage.player.ai.ma.optimizers.impl.*;
 import mage.player.ai.memory.AiMemory;
+import mage.player.ai.perf.AiPerformanceLog;
 import mage.player.ai.score.GameStateEvaluator2;
 import mage.player.ai.util.CombatInfo;
 import mage.player.ai.util.CombatUtil;
@@ -539,7 +540,26 @@ public class ComputerPlayer6 extends ComputerPlayer {
     protected Integer addActionsTimed() {
         // TODO: all actions added and calculated one by one,
         //  multithreading do not supported here
+
+        // Sprint 34 — Scalability telemetry: capture context before the FutureTask starts.
+        // WHY here: root.game holds the pre-simulation state; values are stable and correct.
+        // The PerfAccumulator is then incremented from the simulation thread (safe: AtomicLong).
+        if (AiPerformanceLog.AI_PERF_LOG && root != null && root.game != null) {
+            String gameId   = root.game.getId() != null ? root.game.getId().toString() : "unknown";
+            int    turn     = root.game.getTurnNum();
+            String phase    = (root.game.getPhase() != null && root.game.getPhase().getStep() != null)
+                              ? root.game.getPhase().getStep().getType().name()
+                              : "UNKNOWN";
+            int boardSize   = root.game.getBattlefield().getAllPermanents().size();
+            int handSize    = root.game.getPlayer(playerId) != null
+                              ? root.game.getPlayer(playerId).getHand().size() : -1;
+            int stackSize   = root.game.getStack().size();
+            AiPerformanceLog.beginCall(gameId, turn, phase, getName(),
+                                       boardSize, handSize, stackSize);
+        }
+
         // run new game simulation in parallel thread
+        boolean perfTimedOut = false;
         FutureTask<Integer> task = new FutureTask<>(() -> addActions(root, maxDepth, Integer.MIN_VALUE, Integer.MAX_VALUE));
         threadPoolSimulations.execute(task);
         try {
@@ -550,11 +570,13 @@ public class ComputerPlayer6 extends ComputerPlayer {
             logger.debug("maxThink: " + maxSeconds + " seconds ");
             Integer res = task.get(maxSeconds, TimeUnit.SECONDS);
             if (res != null) {
+                AiPerformanceLog.endCall(false, "COMPLETED");
                 return res;
             }
         } catch (TimeoutException | InterruptedException e) {
             // AI thinks too long
             // how-to fix: look at stack info - it can contain bad ability with infinite choose dialog
+            perfTimedOut = true;
             logger.warn("");
             logger.warn("AI player thinks too long (report it to github):");
             logger.warn(" - player: " + getName());
@@ -571,6 +593,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
             // real games: must catch and log
             // unit tests: must raise again for fast fail
             if (this.isTestMode() && this.isFastFailInTestMode()) {
+                AiPerformanceLog.endCall(false, "ERROR");
                 throw new IllegalStateException("One of the simulated games raise the error: " + e, e);
             }
         } catch (Throwable e) {
@@ -579,6 +602,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
             task.cancel(true);
         }
         //TODO: timeout handling
+        AiPerformanceLog.endCall(perfTimedOut, perfTimedOut ? "TIMEOUT" : "PASS_FALLBACK");
         return 0;
     }
 
@@ -615,7 +639,13 @@ public class ComputerPlayer6 extends ComputerPlayer {
         SimulatedPlayer2 currentPlayer = (SimulatedPlayer2) game.getPlayer(game.getPlayerList().get());
         SimulationNode2 bestNode = null;
         List<Ability> allActions = currentPlayer.simulatePriority(game);
+        // Sprint 34: measure optimizer pipeline cost per node expansion.
+        // optimizeMs accumulates across all nodes in this addActionsTimed() call.
+        long perfOptStart = AiPerformanceLog.AI_PERF_LOG ? System.nanoTime() : 0L;
         optimize(game, allActions);
+        if (AiPerformanceLog.AI_PERF_LOG) {
+            AiPerformanceLog.recordOptimizerTime(System.nanoTime() - perfOptStart);
+        }
         int startedScore = GameStateEvaluator2.evaluate(this.getId(), node.getGame()).getTotalScore();
         if (logger.isInfoEnabled()
                 && !allActions.isEmpty()
