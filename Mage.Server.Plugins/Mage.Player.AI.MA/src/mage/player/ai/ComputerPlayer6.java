@@ -30,6 +30,7 @@ import mage.game.stack.StackObject;
 import mage.player.ai.ma.optimizers.TreeOptimizer;
 import mage.player.ai.ma.optimizers.impl.*;
 import mage.player.ai.memory.AiMemory;
+import mage.player.ai.complexity.BoardComplexityGuard;
 import mage.player.ai.perf.AiPerformanceLog;
 import mage.player.ai.perf.TargetEnumerationCap;
 import mage.player.ai.score.GameStateEvaluator2;
@@ -562,9 +563,20 @@ public class ComputerPlayer6 extends ComputerPlayer {
         // Sprint 34.5: clear stale cap log queue before the simulation starts.
         TargetEnumerationCap.beginTurn();
 
+        // Sprint 34.6: REDUCED regime caps maxDepth to 2 to cut the α-β tree on extreme boards.
+        // Computed before the FutureTask so the depth is effectively final for lambda capture.
+        int effectiveMaxDepth = maxDepth;
+        if (root != null && root.game != null) {
+            int complexity = BoardComplexityGuard.computeComplexityScore(root.game, playerId);
+            if (BoardComplexityGuard.getRegime(complexity) == BoardComplexityGuard.Regime.REDUCED) {
+                effectiveMaxDepth = Math.min(maxDepth, BoardComplexityGuard.REDUCED_MAX_DEPTH);
+            }
+        }
+        final int depthToUse = effectiveMaxDepth;
+
         // run new game simulation in parallel thread
         boolean perfTimedOut = false;
-        FutureTask<Integer> task = new FutureTask<>(() -> addActions(root, maxDepth, Integer.MIN_VALUE, Integer.MAX_VALUE));
+        FutureTask<Integer> task = new FutureTask<>(() -> addActions(root, depthToUse, Integer.MIN_VALUE, Integer.MAX_VALUE));
         threadPoolSimulations.execute(task);
         try {
             int maxSeconds = maxThinkTimeSecs;

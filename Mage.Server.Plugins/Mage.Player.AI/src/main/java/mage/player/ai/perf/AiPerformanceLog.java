@@ -70,7 +70,11 @@ public class AiPerformanceLog {
         public final AtomicLong optimizeMs      = new AtomicLong();
         // Sprint 34.5: number of times TargetEnumerationCap fired during this addActionsTimed() call.
         // Non-zero = combinatorial explosion was detected and capped; zero = board small enough.
-        public final AtomicLong targetCapHits   = new AtomicLong();
+        public final AtomicLong targetCapHits          = new AtomicLong();
+        // Sprint 34.6: circuit breaker activations. Non-zero = board was extreme enough to
+        // trigger REDUCED or BYPASS regime (see BoardComplexityGuard for thresholds).
+        public final AtomicLong circuitBreakerReduced  = new AtomicLong();
+        public final AtomicLong circuitBreakerBypass   = new AtomicLong();
 
         PerfAccumulator(String gameId, int turn, String phase, String player,
                         int boardSize, int handSize, int stackSize) {
@@ -161,13 +165,25 @@ public class AiPerformanceLog {
         if (acc != null) acc.targetCapHits.incrementAndGet();
     }
 
+    public static void recordCircuitBreakerReduced() {
+        if (!AI_PERF_LOG) return;
+        PerfAccumulator acc = current;
+        if (acc != null) acc.circuitBreakerReduced.incrementAndGet();
+    }
+
+    public static void recordCircuitBreakerBypass() {
+        if (!AI_PERF_LOG) return;
+        PerfAccumulator acc = current;
+        if (acc != null) acc.circuitBreakerBypass.incrementAndGet();
+    }
+
     // ── CSV output ─────────────────────────────────────────────────────────────
 
     private static final String CSV_HEADER =
             "gameId,turn,phase,player,boardSize,handSize,stackSize," +
             "totalMs,timedOut,optimizeMs," +
             "evalCalls,stackClassCalls,tempoClassCalls,tier8ClassCalls," +
-            "targetCapHits," +
+            "targetCapHits,circuitBreakerReduced,circuitBreakerBypass," +
             "decision\n";
 
     private static void writeRow(PerfAccumulator acc, long totalMs, boolean timedOut, String decision) {
@@ -181,7 +197,7 @@ public class AiPerformanceLog {
             if (needsHeader) {
                 fw.write(CSV_HEADER);
             }
-            fw.write(String.format("%s,%d,%s,%s,%d,%d,%d,%d,%b,%d,%d,%d,%d,%d,%d,%s\n",
+            fw.write(String.format("%s,%d,%s,%s,%d,%d,%d,%d,%b,%d,%d,%d,%d,%d,%d,%d,%d,%s\n",
                     acc.gameId,
                     acc.turn,
                     acc.phase,
@@ -197,6 +213,8 @@ public class AiPerformanceLog {
                     acc.tempoClassCalls.get(),
                     acc.tier8ClassCalls.get(),
                     acc.targetCapHits.get(),
+                    acc.circuitBreakerReduced.get(),
+                    acc.circuitBreakerBypass.get(),
                     decision.replace(",", ";")  // escape commas in card/action names
             ));
         } catch (IOException e) {

@@ -5,6 +5,7 @@ import mage.abilities.Ability;
 import mage.abilities.ActivatedAbility;
 import mage.abilities.TriggeredAbility;
 import mage.abilities.common.PassAbility;
+import mage.player.ai.complexity.BoardComplexityGuard;
 import mage.player.ai.land.LandSelector;
 import mage.player.ai.perf.TargetEnumerationCap;
 import mage.abilities.costs.mana.ManaCost;
@@ -76,35 +77,54 @@ public final class SimulatedPlayer2 extends ComputerPlayer {
      * Find all playable abilities with all possible targets (targets already selected in ability)
      */
     public List<Ability> simulatePriority(Game game) {
-        allActions = new ConcurrentLinkedQueue<>();
-        Game sim = game.createSimulationForAI();
-        simulateOptions(sim);
+        // Sprint 34.6: circuit breaker — score the board BEFORE cloning the game.
+        // BYPASS skips both the clone and the full simulation entirely.
+        // REDUCED sets a tighter cap override (cleared in finally).
+        int score = BoardComplexityGuard.computeComplexityScore(game, playerId);
+        BoardComplexityGuard.Regime regime = BoardComplexityGuard.getRegime(score);
 
-        // possible actions
-        List<Ability> list = new ArrayList<>(allActions);
-        Collections.reverse(list);
+        if (regime == BoardComplexityGuard.Regime.BYPASS) {
+            return BoardComplexityGuard.bypassSelect(game, playerId, score);
+        }
 
-        // pass action
-        list.add(new PassAbility());
+        if (regime == BoardComplexityGuard.Regime.REDUCED) {
+            BoardComplexityGuard.logReduced(score, game, playerId);
+            TargetEnumerationCap.setCapOverride(BoardComplexityGuard.REDUCED_CAP);
+        }
+        try {
+            allActions = new ConcurrentLinkedQueue<>();
+            Game sim = game.createSimulationForAI();
+            simulateOptions(sim);
 
-        if (logger.isTraceEnabled()) {
-            for (Ability a : allActions) {
-                logger.info("ability==" + a);
-                if (!a.getTargets().isEmpty()) {
-                    MageObject mageObject = game.getObject(a.getFirstTarget());
-                    if (mageObject != null) {
-                        logger.info("   target=" + mageObject.getName());
-                    } else {
-                        Player player = game.getPlayer(a.getFirstTarget());
-                        if (player != null) {
-                            logger.info("   target=" + player.getName());
+            // possible actions
+            List<Ability> list = new ArrayList<>(allActions);
+            Collections.reverse(list);
+
+            // pass action
+            list.add(new PassAbility());
+
+            if (logger.isTraceEnabled()) {
+                for (Ability a : allActions) {
+                    logger.info("ability==" + a);
+                    if (!a.getTargets().isEmpty()) {
+                        MageObject mageObject = game.getObject(a.getFirstTarget());
+                        if (mageObject != null) {
+                            logger.info("   target=" + mageObject.getName());
+                        } else {
+                            Player player = game.getPlayer(a.getFirstTarget());
+                            if (player != null) {
+                                logger.info("   target=" + player.getName());
+                            }
                         }
                     }
                 }
             }
-        }
 
-        return list;
+            return list;
+        } finally {
+            // clearCapOverride() is always safe: no-op when regime == NORMAL (ThreadLocal never set)
+            TargetEnumerationCap.clearCapOverride();
+        }
     }
 
     private void simulateOptions(Game game) {
@@ -146,7 +166,9 @@ public final class SimulatedPlayer2 extends ComputerPlayer {
         // WHY here: super.getPlayableOptions() generates the full cartesian product of target
         // combinations, which can be 34k+ for "choose up to 3" on a 60-perm board. Ranking
         // top-50 by threat costs microseconds; expanding 34k minimax nodes costs 60s+ (timeout).
-        if (options.size() > TargetEnumerationCap.MAX_TARGET_OPTIONS_PER_ABILITY) {
+        // Sprint 34.6: effectiveCap() returns the ThreadLocal REDUCED override (20) when
+        // BoardComplexityGuard set it, or MAX_TARGET_OPTIONS_PER_ABILITY (50) otherwise.
+        if (options.size() > TargetEnumerationCap.effectiveCap()) {
             options = TargetEnumerationCap.cap(options, ability, game, playerId);
         }
         return options;

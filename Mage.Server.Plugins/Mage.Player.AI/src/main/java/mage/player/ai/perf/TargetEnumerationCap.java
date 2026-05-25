@@ -42,6 +42,28 @@ public class TargetEnumerationCap {
     // At 5000 threat (decent board), a permanent scores 2x. At 10000 (dominant), 3x.
     private static final int THREAT_NORMALIZER = 5000;
 
+    // Sprint 34.6: ThreadLocal cap override for REDUCED regime (BoardComplexityGuard).
+    // WHY ThreadLocal: SimulatedPlayer2 runs inside a FutureTask on a separate thread.
+    // The override must be invisible to the game thread and to other bot simulations.
+    // Must be cleared in a finally block to avoid leaking between turns.
+    private static final ThreadLocal<Integer> CAP_OVERRIDE = new ThreadLocal<>();
+
+    /** Override the effective cap for this thread. Call from SimulatedPlayer2 before simulateOptions(). */
+    public static void setCapOverride(int cap) {
+        CAP_OVERRIDE.set(cap);
+    }
+
+    /** Clear the cap override. Must be called in a finally block matching setCapOverride(). */
+    public static void clearCapOverride() {
+        CAP_OVERRIDE.remove();
+    }
+
+    /** Returns the active cap: override (if set) or the default MAX_TARGET_OPTIONS_PER_ABILITY. */
+    public static int effectiveCap() {
+        Integer override = CAP_OVERRIDE.get();
+        return (override != null) ? override : MAX_TARGET_OPTIONS_PER_ABILITY;
+    }
+
     // Chat log queue: filled during simulation thread (FutureTask), flushed to real game
     // chat by CP6.addActionsTimed() after task.get() returns. Uses synchronizedList because
     // simulation runs on a different thread than the game loop.
@@ -105,7 +127,7 @@ public class TargetEnumerationCap {
         } else {
             // Neutral/mixed effects: no meaningful ranking available; keep first K.
             // These are unusual (most spells are clearly bad or good); quality impact is low.
-            capped = new ArrayList<>(options.subList(0, MAX_TARGET_OPTIONS_PER_ABILITY));
+            capped = new ArrayList<>(options.subList(0, Math.min(effectiveCap(), options.size())));
         }
 
         AiPerformanceLog.recordTargetCapHit();
@@ -126,7 +148,7 @@ public class TargetEnumerationCap {
         return options.stream()
                 .sorted(Comparator.comparingInt(
                         (Ability o) -> scoreOption(o, game, playerId, bad)).reversed())
-                .limit(MAX_TARGET_OPTIONS_PER_ABILITY)
+                .limit(effectiveCap())
                 .collect(Collectors.toList());
     }
 
