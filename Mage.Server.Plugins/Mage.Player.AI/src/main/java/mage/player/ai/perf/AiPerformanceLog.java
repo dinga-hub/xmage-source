@@ -68,6 +68,9 @@ public class AiPerformanceLog {
         // WHY separate: optimizer time = classifiers + TreeOptimizer.optimize() overhead.
         // Comparing optimizeMs to totalMs shows what fraction the pipeline costs.
         public final AtomicLong optimizeMs      = new AtomicLong();
+        // Sprint 34.5: number of times TargetEnumerationCap fired during this addActionsTimed() call.
+        // Non-zero = combinatorial explosion was detected and capped; zero = board small enough.
+        public final AtomicLong targetCapHits   = new AtomicLong();
 
         PerfAccumulator(String gameId, int turn, String phase, String player,
                         int boardSize, int handSize, int stackSize) {
@@ -152,12 +155,19 @@ public class AiPerformanceLog {
         if (acc != null) acc.tier8ClassCalls.incrementAndGet();
     }
 
+    public static void recordTargetCapHit() {
+        if (!AI_PERF_LOG) return;
+        PerfAccumulator acc = current;
+        if (acc != null) acc.targetCapHits.incrementAndGet();
+    }
+
     // ── CSV output ─────────────────────────────────────────────────────────────
 
     private static final String CSV_HEADER =
             "gameId,turn,phase,player,boardSize,handSize,stackSize," +
             "totalMs,timedOut,optimizeMs," +
             "evalCalls,stackClassCalls,tempoClassCalls,tier8ClassCalls," +
+            "targetCapHits," +
             "decision\n";
 
     private static void writeRow(PerfAccumulator acc, long totalMs, boolean timedOut, String decision) {
@@ -171,7 +181,7 @@ public class AiPerformanceLog {
             if (needsHeader) {
                 fw.write(CSV_HEADER);
             }
-            fw.write(String.format("%s,%d,%s,%s,%d,%d,%d,%d,%b,%d,%d,%d,%d,%d,%s\n",
+            fw.write(String.format("%s,%d,%s,%s,%d,%d,%d,%d,%b,%d,%d,%d,%d,%d,%d,%s\n",
                     acc.gameId,
                     acc.turn,
                     acc.phase,
@@ -186,6 +196,7 @@ public class AiPerformanceLog {
                     acc.stackClassCalls.get(),
                     acc.tempoClassCalls.get(),
                     acc.tier8ClassCalls.get(),
+                    acc.targetCapHits.get(),
                     decision.replace(",", ";")  // escape commas in card/action names
             ));
         } catch (IOException e) {

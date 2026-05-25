@@ -31,6 +31,7 @@ import mage.player.ai.ma.optimizers.TreeOptimizer;
 import mage.player.ai.ma.optimizers.impl.*;
 import mage.player.ai.memory.AiMemory;
 import mage.player.ai.perf.AiPerformanceLog;
+import mage.player.ai.perf.TargetEnumerationCap;
 import mage.player.ai.score.GameStateEvaluator2;
 import mage.player.ai.util.CombatInfo;
 import mage.player.ai.util.CombatUtil;
@@ -558,6 +559,9 @@ public class ComputerPlayer6 extends ComputerPlayer {
                                        boardSize, handSize, stackSize);
         }
 
+        // Sprint 34.5: clear stale cap log queue before the simulation starts.
+        TargetEnumerationCap.beginTurn();
+
         // run new game simulation in parallel thread
         boolean perfTimedOut = false;
         FutureTask<Integer> task = new FutureTask<>(() -> addActions(root, maxDepth, Integer.MIN_VALUE, Integer.MAX_VALUE));
@@ -570,6 +574,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
             logger.debug("maxThink: " + maxSeconds + " seconds ");
             Integer res = task.get(maxSeconds, TimeUnit.SECONDS);
             if (res != null) {
+                TargetEnumerationCap.flushToGameLog(root.game, getName());
                 AiPerformanceLog.endCall(false, "COMPLETED");
                 return res;
             }
@@ -585,6 +590,7 @@ public class ComputerPlayer6 extends ComputerPlayer {
             logger.warn(" - game: " + root.game);
             printFreezeNode(root);
             logger.warn("");
+            TargetEnumerationCap.flushToGameLog(root.game, getName());
             task.cancel(true);
         } catch (ExecutionException e) {
             // game error

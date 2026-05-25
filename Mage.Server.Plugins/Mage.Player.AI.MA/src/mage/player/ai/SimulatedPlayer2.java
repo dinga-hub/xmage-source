@@ -6,6 +6,7 @@ import mage.abilities.ActivatedAbility;
 import mage.abilities.TriggeredAbility;
 import mage.abilities.common.PassAbility;
 import mage.player.ai.land.LandSelector;
+import mage.player.ai.perf.TargetEnumerationCap;
 import mage.abilities.costs.mana.ManaCost;
 import mage.abilities.costs.mana.ManaCostsImpl;
 import mage.abilities.costs.mana.VariableManaCost;
@@ -140,6 +141,13 @@ public final class SimulatedPlayer2 extends ComputerPlayer {
                 && ability.getCosts().getTargets().getNextUnchosen(game) == null
                 && !ability.getManaCosts().getVariableCosts().isEmpty()) {
             addVariableXOptions(options, ability, 0, game);
+        }
+        // Sprint 34.5: cap combinatorial target explosion before minimax expansion.
+        // WHY here: super.getPlayableOptions() generates the full cartesian product of target
+        // combinations, which can be 34k+ for "choose up to 3" on a 60-perm board. Ranking
+        // top-50 by threat costs microseconds; expanding 34k minimax nodes costs 60s+ (timeout).
+        if (options.size() > TargetEnumerationCap.MAX_TARGET_OPTIONS_PER_ABILITY) {
+            options = TargetEnumerationCap.cap(options, ability, game, playerId);
         }
         return options;
     }
